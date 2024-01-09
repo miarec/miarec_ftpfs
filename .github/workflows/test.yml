@@ -1,0 +1,91 @@
+name: Test
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test (Python ${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          # - '3.6'    # Python 3.6 is EOL. Not available on Ubuntu 22.04 in GitHub
+          - '3.7'
+          - '3.8'
+          - '3.9'
+          - '3.10'
+          - '3.11'
+    steps:
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Update pip
+      run: python -m pip install -U pip wheel setuptools
+
+    - name: Install local code
+      run: python -m pip install .
+
+    - name: Install Test dependencies
+      run: python -m pip install ".[test]"
+
+    - name: Test with coverage
+      run: pytest --doctest-modules --junitxml=junit/test-results.xml --cov=miarec_ftpfs --cov-report=xml --cov-report=html tests/
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v3
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  package:
+    environment: PyPI
+    runs-on: ubuntu-latest
+    name: Deploy (PyPI)
+    needs: test
+    if: startsWith(github.ref, 'refs/tags')
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v3
+      with:
+        python-version: 3.11
+
+    - name: Install build package
+      run: python -m pip install -U build
+
+    - name: Build a wheel and source tarball
+      run: python -m build --sdist --wheel --outdir dist
+
+    - name: Publish distributions to PyPI
+      uses: pypa/gh-action-pypi-publish@master
+      with:
+        user: __token__
+        password: ${{ secrets.PYPI_API_TOKEN }}
+
+  release:
+    environment: GitHub Releases
+    runs-on: ubuntu-latest
+    if: "startsWith(github.ref, 'refs/tags/v')"
+    name: Release
+    needs: package
+    steps:
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Release a Changelog
+      uses: rasmus-saks/release-a-changelog-action@v1.0.1
+      with:
+        github-token: '${{ secrets.GITHUB_TOKEN }}'
