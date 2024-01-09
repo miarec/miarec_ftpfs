@@ -11,6 +11,7 @@ import datetime
 import io
 import itertools
 import socket
+import ssl
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -22,7 +23,7 @@ except ImportError as err:
     FTP_TLS = err  # type: ignore
 from typing import cast
 
-from ftplib import error_perm, error_temp
+from ftplib import error_perm, error_temp, error_proto, error_reply
 from six import PY2, raise_from, text_type
 
 from . import _ftp_parse as ftp_parse
@@ -63,10 +64,23 @@ if typing.TYPE_CHECKING:
     from fs.subfs import SubFS
 
 
+import logging
+log = logging.getLogger(__name__)
+
+
 _F = typing.TypeVar("_F", bound="FTPFS")
 
 
 __all__ = ["FTPFS"]
+
+@contextmanager
+def ignore_errors(op):
+    """Ignore any exception inside with block (c) MiaRec"""
+    try:
+        yield
+    except Exception as exc:
+        log.info(f"[{op}] Unexpected exception: {exc}")
+        pass   # do nothing
 
 
 @contextmanager
@@ -75,26 +89,46 @@ def ftp_errors(fs, path=None):
     try:
         with fs._lock:
             yield
-    except socket.error:
+
+    except socket.error as error:
+        log.info('FTP Socket error: %s' % error)
         raise errors.RemoteConnectionError(
-            msg="unable to connect to {}".format(fs.host)
+            msg="unable to connect to {}: {}".format(fs.host, error)
         )
-    except EOFError:
+
+    except EOFError as error:     # FTP.getresp() may throw EOFError (c) MiaRec
+        log.info('FTP Unexpected EOF: %s' % error)
         raise errors.RemoteConnectionError(msg="lost connection to {}".format(fs.host))
-    except error_temp as error:
+
+    except (error_reply, error_proto) as error:   # Added by MiaRec
+        log.info('FTP error: %s' % error)
+        if isinstance(fs, FTPFS):
+            fs._ftp = None    # clear the connection, so, it can be re-opened on next operation (c) MiaRec
         if path is not None:
             raise errors.ResourceError(
                 path, msg="ftp error on resource '{}' ({})".format(path, error)
             )
         else:
             raise errors.OperationFailed(msg="ftp error ({})".format(error))
+
+    except error_temp as error:
+        log.info('FTP temporary error: %s' % error)
+        if path is not None:
+            raise errors.ResourceError(
+                path, msg="ftp error on resource '{}' ({})".format(path, error)
+            )
+        else:
+            raise errors.OperationFailed(msg="ftp error ({})".format(error))
+
     except error_perm as error:
+        log.info('FTP permission error: %s' % error)
         code, message = _parse_ftp_error(error)
         if code == "552":
-            raise errors.InsufficientStorage(path=path, msg=message)
+            raise errors.InsufficientStorage(path=cast(str, path), msg=message)
         elif code in ("501", "550"):
+            # raise errors.ResourceNotFound(path=cast(str, path), msg="resource '{}' not found or permission error ({})".format(path, error)) # (c) MiaRec
             raise errors.ResourceNotFound(path=cast(str, path))
-        raise errors.PermissionDenied(msg=message)
+        raise errors.PermissionDenied(path=cast(str, path), msg=message)
 
 
 @contextmanager
@@ -191,16 +225,25 @@ class FTPFile(io.RawIOBase):
             with self._lock:
                 try:
                     if self._write_conn is not None:
-                        self._write_conn.close()
+                        if isinstance(self._write_conn, ssl.SSLSocket):
+                            with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                                self._write_conn = self._write_conn.unwrap()
+                            with ignore_errors("Closing write connection"):  # (c) MiaRec
+                                self._write_conn.close()
                         self._write_conn = None
                         self.ftp.voidresp()  # Ensure last write completed
+
                     if self._read_conn is not None:
-                        self._read_conn.close()
+                        if isinstance(self._read_conn, ssl.SSLSocket):
+                            with ignore_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                                self._read_conn = self._read_conn.unwrap()
+                        with ignore_errors("Closing read connection"):  # (c) MiaRec
+                            self._read_conn.close()
                         self._read_conn = None
-                    try:
+
+                    with ignore_errors("Closing FTP file connection"):  # (c) MiaRec
                         self.ftp.quit()
-                    except error_temp:  # pragma: no cover
-                        pass
+
                 finally:
                     super(FTPFile, self).close()
 
