@@ -22,7 +22,7 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from six import BytesIO, text_type
 
 from fs import errors
-from fs.ftpfs import FTPFS, ftp_errors
+from miarec_ftpfs import FTPFS, ftp_errors
 from fs.opener import open_fs
 from fs.path import join
 from fs.subfs import SubFS
@@ -86,11 +86,11 @@ class TestFTPFSClass(unittest.TestCase):
         self.assertEqual(info, expected)
 
     def test_opener(self):
-        ftp_fs = open_fs("ftp://will:wfc@ftp.example.org")
+        ftp_fs = open_fs("mftp://will:wfc@ftp.example.org")
         self.assertIsInstance(ftp_fs, FTPFS)
         self.assertEqual(ftp_fs.host, "ftp.example.org")
 
-        ftps_fs = open_fs("ftps://will:wfc@ftp.example.org")
+        ftps_fs = open_fs("mftps://will:wfc@ftp.example.org")
         self.assertIsInstance(ftps_fs, FTPFS)
         self.assertTrue(ftps_fs.tls)
 
@@ -178,10 +178,11 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
 
     def make_fs(self):
         return open_fs(
-            "ftp://{}:{}@{}:{}".format(
+            "mftp://{}:{}@{}:{}".format(
                 self.user, self.pasw, self.server.host, self.server.port
             )
         )
+        
 
     def tearDown(self):
         shutil.rmtree(self._temp_path)
@@ -191,7 +192,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
     def test_ftp_url(self):
         self.assertEqual(
             self.fs.ftp_url,
-            "ftp://{}:{}@{}:{}".format(
+            "mftp://{}:{}@{}:{}".format(
                 self.user, self.pasw, self.server.host, self.server.port
             ),
         )
@@ -202,19 +203,19 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
         self.fs.create("foo/bar")
         self.assertEqual(
             self.fs.geturl("foo"),
-            "ftp://{}:{}@{}:{}/foo".format(
+            "mftp://{}:{}@{}:{}/foo".format(
                 self.user, self.pasw, self.server.host, self.server.port
             ),
         )
         self.assertEqual(
             self.fs.geturl("bar"),
-            "ftp://{}:{}@{}:{}/bar".format(
+            "mftp://{}:{}@{}:{}/bar".format(
                 self.user, self.pasw, self.server.host, self.server.port
             ),
         )
         self.assertEqual(
             self.fs.geturl("foo/bar"),
-            "ftp://{}:{}@{}:{}/foo/bar".format(
+            "mftp://{}:{}@{}:{}/foo/bar".format(
                 self.user, self.pasw, self.server.host, self.server.port
             ),
         )
@@ -277,7 +278,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
         self.fs.makedir("foo")
         self.fs.writetext("foo/bar", "baz")
         ftp_fs = open_fs(
-            "ftp://user:1234@{}:{}/foo".format(self.server.host, self.server.port)
+            "mftp://user:1234@{}:{}/foo".format(self.server.host, self.server.port)
         )
         self.assertIsInstance(ftp_fs, SubFS)
         self.assertEqual(ftp_fs.readtext("bar"), "baz")
@@ -286,7 +287,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
     def test_create(self):
 
         directory = join("home", self.user, "test", "directory")
-        base = "ftp://user:1234@{}:{}/foo".format(self.server.host, self.server.port)
+        base = "mftp://user:1234@{}:{}/foo".format(self.server.host, self.server.port)
         url = "{}/{}".format(base, directory)
 
         # Make sure unexisting directory raises `CreateFailed`
@@ -364,7 +365,7 @@ class TestAnonFTPFS(FSTestCases, unittest.TestCase):
         super(TestAnonFTPFS, cls).tearDownClass()
 
     def make_fs(self):
-        return open_fs("ftp://{}:{}".format(self.server.host, self.server.port))
+        return open_fs("mftp://{}:{}".format(self.server.host, self.server.port))
 
     def tearDown(self):
         shutil.rmtree(self._temp_path)
@@ -373,7 +374,7 @@ class TestAnonFTPFS(FSTestCases, unittest.TestCase):
 
     def test_ftp_url(self):
         self.assertEqual(
-            self.fs.ftp_url, "ftp://{}:{}".format(self.server.host, self.server.port)
+            self.fs.ftp_url, "mftp://{}:{}".format(self.server.host, self.server.port)
         )
 
     def test_geturl(self):
@@ -382,13 +383,13 @@ class TestAnonFTPFS(FSTestCases, unittest.TestCase):
         self.fs.create("foo/bar")
         self.assertEqual(
             self.fs.geturl("foo"),
-            "ftp://{}:{}/foo".format(self.server.host, self.server.port),
+            "mftp://{}:{}/foo".format(self.server.host, self.server.port),
         )
         self.assertEqual(
             self.fs.geturl("bar"),
-            "ftp://{}:{}/bar".format(self.server.host, self.server.port),
+            "mftp://{}:{}/bar".format(self.server.host, self.server.port),
         )
         self.assertEqual(
             self.fs.geturl("foo/bar"),
-            "ftp://{}:{}/foo/bar".format(self.server.host, self.server.port),
+            "mftp://{}:{}/foo/bar".format(self.server.host, self.server.port),
         )

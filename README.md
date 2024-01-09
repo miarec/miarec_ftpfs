@@ -11,7 +11,7 @@ The code was modified by MiaRec team to fullfill our needs.
 
 1. Requires Python 3.6+. A support of Python 2.7 is removed.
 
-2. Opener is not implemented. Use an explicit constructor instead.
+2. Opener protocol prefixes are `mftp://` and `mftps://` for FTP and FTP-over-TLS respectively (instead of the original `ftp://` and `ftps://`)
 
 ## Installing
 
@@ -35,18 +35,32 @@ from fs.ftpfs import FTPFS
 FTPFS("demo.wftpserver.com")
 ```
 
+Or via an FS URL:
+
+```python
+ftp_fs = fs.open_fs('mftp://test.rebex.net')
+```
+
+Or via an FS URL, using TLS:
+
+```python
+ftp_fs = fs.open_fs('mftps://demo.wftpserver.com')
+```
+
 You can also use a non-anonymous username, and optionally a
-password, even within a FS URL::
+password, even within a FS URL:
 
 ```python
 ftp_fs = FTPFS("test.rebex.net", user="demo", passwd="password")
+ftp_fs = fs.open_fs('mftp://demo:password@test.rebex.net')
 ```
 
 Connecting via a proxy is supported. If using a FS URL, the proxy
-URL will need to be added as a URL parameter::
+URL will need to be added as a URL parameter:
 
 ```python
 ftp_fs = FTPFS("ftp.ebi.ac.uk", proxy="test.rebex.net")
+ftp_fs = fs.open_fs('mftp://ftp.ebi.ac.uk/?proxy=test.rebex.net')
 ```
 
 ## Testing

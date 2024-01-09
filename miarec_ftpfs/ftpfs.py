@@ -361,23 +361,23 @@ class FTPFS(FS):
 
         Or via an FS URL::
 
-            >>> ftp_fs = fs.open_fs('ftp://test.rebex.net')
+            >>> ftp_fs = fs.open_fs('mftp://test.rebex.net')
 
         Or via an FS URL, using TLS::
 
-            >>> ftp_fs = fs.open_fs('ftps://demo.wftpserver.com')
+            >>> ftp_fs = fs.open_fs('mftps://demo.wftpserver.com')
 
         You can also use a non-anonymous username, and optionally a
         password, even within a FS URL::
 
             >>> ftp_fs = FTPFS("test.rebex.net", user="demo", passwd="password")
-            >>> ftp_fs = fs.open_fs('ftp://demo:password@test.rebex.net')
+            >>> ftp_fs = fs.open_fs('mftp://demo:password@test.rebex.net')
 
         Connecting via a proxy is supported. If using a FS URL, the proxy
         URL will need to be added as a URL parameter::
 
             >>> ftp_fs = FTPFS("ftp.ebi.ac.uk", proxy="test.rebex.net")
-            >>> ftp_fs = fs.open_fs('ftp://ftp.ebi.ac.uk/?proxy=test.rebex.net')
+            >>> ftp_fs = fs.open_fs('mftp://ftp.ebi.ac.uk/?proxy=test.rebex.net')
 
     """
 
@@ -515,7 +515,7 @@ class FTPFS(FS):
         else:
             _user_part = "{}:{}@".format(self.user, self.passwd)
 
-        scheme = "ftps" if self.tls else "ftp"
+        scheme = "mftps" if self.tls else "mftp"
         url = "{}://{}{}".format(scheme, _user_part, _host_part)
         return url
 
