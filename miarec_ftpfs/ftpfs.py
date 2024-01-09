@@ -347,6 +347,10 @@ class FTPFile(io.RawIOBase):
     def truncate(self, size=None):
         # type: (Optional[int]) -> int
         # Inefficient, but I don't know if truncate is possible with ftp
+        # TODO: this strange implementation of "truncate" must be clearly documented 
+        # as we are reading the original file into memory and then pushing it back.
+        # If file is huge, we can hit Out-of-memory issue
+        # (c) MiaRec
         with self._lock:
             if size is None:
                 size = self.tell()
@@ -377,15 +381,38 @@ class FTPFile(io.RawIOBase):
                 new_pos = file_size + pos
             self.pos = max(0, new_pos)
 
+            # Note, the implementation of seek is quite strange
+            # It closes the file and re-opens it again at the requested position.
+            # I think, this code should be refactored.
+            # FTP protocol supports RESTART (REST) command
+            # The original implementation had a bug:
+            # If seek() command is called immediately after "write",
+            # The last write operation may not be flushed to the server yet.
+            # A data corruption will occur!!!
+            # (c) MiaRec
+
+
+            # Make sure we flush all pending write data before closing the connection (c) MiaRec
+            if self._write_conn is not None:
+                if isinstance(self._write_conn, ssl.SSLSocket):
+                    with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                        self._write_conn = self._write_conn.unwrap()
+                    with ignore_errors("Closing write connection"):  # (c) MiaRec
+                        self._write_conn.close()
+                self._write_conn = None
+                self.ftp.voidresp()  # Ensure last write completed
+
+            if self._read_conn is not None:
+                if isinstance(self._read_conn, ssl.SSLSocket):
+                    with ignore_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                        self._read_conn = self._read_conn.unwrap()
+                with ignore_errors("Closing read connection"):  # (c) MiaRec
+                    self._read_conn.close()
+                self._read_conn = None
+
             self.ftp.quit()
             self.ftp = self._open_ftp()
 
-            if self._read_conn:
-                self._read_conn.close()
-                self._read_conn = None
-            if self._write_conn:
-                self._write_conn.close()
-                self._write_conn = None
         return self.tell()
 
 
