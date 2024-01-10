@@ -10,7 +10,6 @@ import typing
 
 from fs.errors import CreateFailed
 from fs.opener import Opener
-#from fs.opener.registry import registry
 
 if typing.TYPE_CHECKING:
     from typing import Text, Union
@@ -56,5 +55,3 @@ class FTPOpener(Opener):
             return ftp_fs.opendir(dir_path, factory=ClosingSubFS)
         else:
             return ftp_fs
-
-#registry.install(FTPOpener)

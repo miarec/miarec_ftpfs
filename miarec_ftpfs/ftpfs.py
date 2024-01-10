@@ -228,8 +228,8 @@ class FTPFile(io.RawIOBase):
                         if isinstance(self._write_conn, ssl.SSLSocket):
                             with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
                                 self._write_conn = self._write_conn.unwrap()
-                            with ignore_errors("Closing write connection"):  # (c) MiaRec
-                                self._write_conn.close()
+                        with ignore_errors("Closing write connection"):  # (c) MiaRec
+                            self._write_conn.close()
                         self._write_conn = None
                         self.ftp.voidresp()  # Ensure last write completed
 
@@ -397,8 +397,8 @@ class FTPFile(io.RawIOBase):
                 if isinstance(self._write_conn, ssl.SSLSocket):
                     with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
                         self._write_conn = self._write_conn.unwrap()
-                    with ignore_errors("Closing write connection"):  # (c) MiaRec
-                        self._write_conn.close()
+                with ignore_errors("Closing write connection"):  # (c) MiaRec
+                    self._write_conn.close()
                 self._write_conn = None
                 self.ftp.voidresp()  # Ensure last write completed
 

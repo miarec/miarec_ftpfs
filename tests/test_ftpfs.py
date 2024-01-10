@@ -341,7 +341,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
         fs = self.fs.delegate_fs()
         with mock.patch.object(fs, "_manage_ftp") as _manage_ftp:
             self.fs.upload("foo", BytesIO(b"hello"))
-        self.assertEqual(self.fs.gettext("foo"), "hello")
+        self.assertEqual(self.fs.readtext("foo"), "hello")
         _manage_ftp.assert_not_called()
 
 
