@@ -237,21 +237,25 @@ class FTPFile(io.RawIOBase):
             with self._lock:
                 try:
                     if self._write_conn is not None:
+                        # Here we silently ignore any errors during closing of the file (c) MiaRec
+                        # A network connection could be already dead and any FTP commands will throw error
                         if isinstance(self._write_conn, ssl.SSLSocket):
                             with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
                                 self._write_conn = self._write_conn.unwrap()
+
                         with ignore_errors("Closing write connection"):  # (c) MiaRec
                             self._write_conn.close()
-                        self._write_conn = None
-                        self.ftp.voidresp()  # Ensure last write completed
+                            self._write_conn = None
+                            self.ftp.voidresp()  # Ensure last write completed
 
                     if self._read_conn is not None:
                         if isinstance(self._read_conn, ssl.SSLSocket):
                             with ignore_errors("Unwrapping SSL read connection"):  # (c) MiaRec
                                 self._read_conn = self._read_conn.unwrap()
+
                         with ignore_errors("Closing read connection"):  # (c) MiaRec
                             self._read_conn.close()
-                        self._read_conn = None
+                            self._read_conn = None
 
                     with ignore_errors("Closing FTP file connection"):  # (c) MiaRec
                         self.ftp.quit()
@@ -391,18 +395,14 @@ class FTPFile(io.RawIOBase):
             elif _whence == Seek.end:
                 file_size = self.fs.getsize(self.path)
                 new_pos = file_size + pos
-            self.pos = max(0, new_pos)
 
-            # Note, the implementation of seek is quite strange
-            # It closes the file and re-opens it again at the requested position.
-            # I think, this code should be refactored.
-            # FTP protocol supports RESTART (REST) command
-            # The original implementation had a bug:
-            # If seek() command is called immediately after "write",
-            # The last write operation may not be flushed to the server yet.
-            # A data corruption will occur!!!
-            # (c) MiaRec
+            new_pos = max(0, new_pos)
+            if new_pos == self.pos:
+                return self.pos   # no changes in position, do nothing
 
+            # We need to re-open write_conn/read_conn to move the file seek position.
+            # When they are re-opened, RESTART (REST) FTP command is sent with a file position
+            self.pos = new_pos
 
             # Make sure we flush all pending write data before closing the connection (c) MiaRec
             if self._write_conn is not None:
