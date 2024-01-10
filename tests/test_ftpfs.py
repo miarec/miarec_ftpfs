@@ -22,7 +22,7 @@ from pyftpdlib.authorizers import DummyAuthorizer
 from six import BytesIO, text_type
 
 from fs import errors
-from miarec_ftpfs import FTPFS, ftp_errors
+from miarec_ftpfs import FTPFS, catch_ftp_errors
 from fs.opener import open_fs
 import fs.path
 from fs.subfs import SubFS
@@ -101,42 +101,45 @@ class TestFTPErrors(unittest.TestCase):
 
     def test_manager(self):
         mem_fs = open_fs("mem://")
+        mem_fs.host = "ftp.example.com"
+        mem_fs.port = 21
 
         with self.assertRaises(errors.ResourceError):
-            with ftp_errors(mem_fs, path="foo"):
+            with catch_ftp_errors(mem_fs, path="foo"):
                 raise error_temp
 
         with self.assertRaises(errors.OperationFailed):
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise error_temp
 
         with self.assertRaises(errors.InsufficientStorage):
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise error_perm("552 foo")
 
         with self.assertRaises(errors.ResourceNotFound):
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise error_perm("501 foo")
 
         with self.assertRaises(errors.PermissionDenied):
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise error_perm("999 foo")
 
     def test_manager_with_host(self):
         mem_fs = open_fs("mem://")
         mem_fs.host = "ftp.example.com"
+        mem_fs.port = 21
 
         with self.assertRaises(errors.RemoteConnectionError) as err_info:
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise EOFError
-        expected_message = "lost connection to ftp.example.com"
-        self.assertEqual(str(err_info.exception)[:len(expected_message)], expected_message)
 
         with self.assertRaises(errors.RemoteConnectionError) as err_info:
-            with ftp_errors(mem_fs):
+            with catch_ftp_errors(mem_fs):
                 raise socket.error
-        expected_message = "unable to connect to ftp.example.com"
-        self.assertEqual(str(err_info.exception)[:len(expected_message)], expected_message)
+
+        with self.assertRaises(errors.OperationTimeout) as err_info:
+            with catch_ftp_errors(mem_fs):
+                raise socket.timeout
 
 
 @mark.slow
@@ -498,6 +501,5 @@ class TestFTPFS_TLS(TestFTPFS):
             raise RuntimeError("could not start FTP TLS server.")
 
         return server
-
 
 

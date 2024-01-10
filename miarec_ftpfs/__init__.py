@@ -1,9 +1,9 @@
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
-__all__ = ["FTPFS", "FTPFile", "ftp_errors", "opener"]
+__all__ = ["FTPFS", "FTPFile", "catch_ftp_errors", "opener"]
 
-from .ftpfs import FTPFS, FTPFile, ftp_errors
+from .ftpfs import FTPFS, FTPFile, catch_ftp_errors
 
 __license__ = "MIT"
 __copyright__ = "Copyright (c) MiaRec"
