@@ -962,6 +962,42 @@ class FTPFS(FS):
         data_bytes = data.getvalue()
         return data_bytes
 
+    def move(self, src_path, dst_path, overwrite=False, preserve_time=False):
+        """Move a file from ``src_path`` to ``dst_path``.
+
+        Arguments:
+            src_path (str): A path on the filesystem to move.
+            dst_path (str): A path on the filesystem where the source
+                file will be written to.
+            overwrite (bool): If `True`, destination path will be
+                overwritten if it exists.
+
+        Raises:
+            fs.errors.FileExpected: If ``src_path`` maps to a
+                directory instead of a file.
+            fs.errors.DestinationExists: If ``dst_path`` exists,
+                and ``overwrite`` is `False`.
+            fs.errors.ResourceNotFound: If a parent directory of
+                ``dst_path`` does not exist.
+
+        """
+        if not overwrite and self.exists(dst_path):
+            raise errors.DestinationExists(dst_path)
+        if self.getinfo(src_path).is_dir:
+            raise errors.FileExpected(src_path)
+
+        with ftp_connection(self, src_path, op='rename {} -> {}'.format(src_path, dst_path)) as ftp:
+            try:
+                ftp.rename(src_path, dst_path)
+            except error_perm:
+                if overwrite or not self.exists(dst_path):
+                    # Fallback to copy/delete
+                    with self.openbin(src_path) as read_file:
+                        self.upload(dst_path, read_file)
+                    self.remove(src_path)
+                else:
+                    raise
+
     def close(self):
         # type: () -> None
         if not self.isclosed():
