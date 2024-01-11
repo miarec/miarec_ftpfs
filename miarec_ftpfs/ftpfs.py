@@ -12,7 +12,6 @@ import io
 import itertools
 import socket
 import ssl
-import threading
 from collections import OrderedDict
 from contextlib import contextmanager
 from ftplib import FTP
@@ -73,24 +72,20 @@ __all__ = ["FTPFS"]
 
 @contextmanager
 def ignore_network_errors(op):
-    """Ignore any exception inside the "with" block (c) MiaRec"""
+    """Ignore Socket and SSL errors"""
     try:
         yield
-
     except (ssl.SSLError, socket.error) as error:
         log.info(f"[{op}] Unexpected network error (ignoring): {error}")
         pass   # do nothing
 
 
 @contextmanager
-def catch_ftp_errors(fs, path=None, op=None, lock=None):
-    # type: (FTPFS, Optional[Text], Optional[Text], Optiona[threading.Lock]) -> Iterator[None]
+def convert_ftp_errors(fs, path=None, op=None):
+    """Convert Socket and FTP protocol errors into the appropriate FSError types"""
+
     try:
-        if lock:
-            with lock:
-                yield
-        else:
-            yield
+        yield
 
     except ssl.SSLError as error:
         log.info('FTP SSL Socket error: %s' % error)
@@ -100,7 +95,7 @@ def catch_ftp_errors(fs, path=None, op=None, lock=None):
 
     except socket.timeout as error:
         log.info('FTP Socket timeout error: %s' % error)
-        raise errors.OperationTimeout(
+        raise errors.RemoteConnectionError(
             msg=f"ftp operation timed out (host={fs.host}:{fs.port} op={op} path={path})"
         )
 
@@ -149,17 +144,24 @@ def catch_ftp_errors(fs, path=None, op=None, lock=None):
         else:
             raise errors.PermissionDenied(path=path, msg=message)
 
-
 @contextmanager
-def manage_ftp(ftp):
-    # type: (FTP) -> Iterator[FTP]
-    try:
-        yield ftp
-    finally:
+def ftp_connection(fs, path=None, op=None):
+    # type: (FTPFS, Optional[Text], Optional[Text]) -> Iterator[FTP]
+    """
+    Handle FTP errors accordingly.
+
+    In case of RemoteConnectioError, the internal network connection will be discarded,
+    and on the next operation, a new connection to remote server will be attempted.
+    """
+    with fs._lock:
         try:
-            ftp.quit()
-        except Exception:  # pragma: no cover
-            pass
+            with convert_ftp_errors(fs, path, op):
+                if fs._ftp is None:
+                    fs._ftp = fs._open_ftp()   # this method can throw exception
+                yield fs._ftp
+        except errors.RemoteConnectionError:
+            fs._ftp = None   # Discard the network connection. It will be reopened  on the next operation
+            raise
 
 
 def _parse_ftp_error(error):
@@ -167,27 +169,6 @@ def _parse_ftp_error(error):
     """Extract code and message from ftp error."""
     code, _, message = text_type(error).partition(" ")
     return code, message
-
-
-if PY2:
-
-    def _encode(st, encoding):
-        # type: (Union[Text, bytes], Text) -> str
-        return st.encode(encoding) if isinstance(st, text_type) else st
-
-    def _decode(st, encoding):
-        # type: (Union[Text, bytes], Text) -> Text
-        return st.decode(encoding, "replace") if isinstance(st, bytes) else st
-
-else:
-
-    def _encode(st, _):
-        # type: (str, str) -> str
-        return st
-
-    def _decode(st, _):
-        # type: (str, str) -> str
-        return st
 
 
 class FTPFile(io.RawIOBase):
@@ -198,7 +179,6 @@ class FTPFile(io.RawIOBase):
         self.path = path
         self.mode = Mode(mode)
         self.pos = 0
-        self._lock = threading.Lock()
         self.ftp = self._open_ftp()
         self._read_conn = None  # type: Optional[socket.socket]
         self._write_conn = None  # type: Optional[socket.socket]
@@ -207,17 +187,18 @@ class FTPFile(io.RawIOBase):
         # type: () -> FTP
         """Open an ftp object for the file."""
         ftp = self.fs._open_ftp()
-        with catch_ftp_errors(self.fs, op='open_file', path=self.path, lock=None):
+        with convert_ftp_errors(self.fs, op='open_file', path=self.path):
             ftp.voidcmd(str("TYPE I"))
         return ftp
+
 
     @property
     def read_conn(self):
         # type: () -> socket.socket
         if self._read_conn is None:
-            with catch_ftp_errors(self.fs, op='open_read_conn', path=self.path, lock=None):
+            with convert_ftp_errors(self.fs, op='open_read_conn', path=self.path):
                 self._read_conn = self.ftp.transfercmd(
-                    str("RETR ") + _encode(self.path, self.ftp.encoding), self.pos
+                    "RETR " + self.path, self.pos
                 )
         return self._read_conn
 
@@ -225,14 +206,14 @@ class FTPFile(io.RawIOBase):
     def write_conn(self):
         # type: () -> socket.socket
         if self._write_conn is None:
-            with catch_ftp_errors(self.fs, op='open_write_conn', path=self.path, lock=None):
+            with convert_ftp_errors(self.fs, op='open_write_conn', path=self.path):
                 if self.mode.appending:
                     self._write_conn = self.ftp.transfercmd(
-                        str("APPE ") + _encode(self.path, self.ftp.encoding)
+                        "APPE " + self.path
                     )
                 else:
                     self._write_conn = self.ftp.transfercmd(
-                        str("STOR ") + _encode(self.path, self.ftp.encoding), self.pos
+                        "STOR " + self.path, self.pos
                     )
         return self._write_conn
 
@@ -244,42 +225,41 @@ class FTPFile(io.RawIOBase):
     def close(self):
         # type: () -> None
         if not self.closed:
-            with self._lock:
-                try:
-                    if self._write_conn is not None:
-                        # Here we silently ignore any errors during closing of the file (c) MiaRec
-                        # A network connection could be already dead and any FTP commands will throw error
-                        with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
-                            if isinstance(self._write_conn, ssl.SSLSocket):
-                                self._write_conn = self._write_conn.unwrap()
+            try:
+                if self._write_conn is not None:
+                    # Here we silently ignore any errors during closing of the file (c) MiaRec
+                    # A network connection could be already dead and any FTP commands will throw error
+                    with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                        if isinstance(self._write_conn, ssl.SSLSocket):
+                            self._write_conn = self._write_conn.unwrap()
 
-                        with ignore_network_errors("Closing write connection"):  # (c) MiaRec
-                            self._write_conn.close()
+                    with ignore_network_errors("Closing write connection"):  # (c) MiaRec
+                        self._write_conn.close()
 
-                        self._write_conn = None
+                    self._write_conn = None
 
-                        with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
-                            self.ftp.voidresp()  # Ensure last operation is completed
+                    with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
+                        self.ftp.voidresp()  # Ensure last operation is completed
 
-                    if self._read_conn is not None:
-                        with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
-                            # Due to buffering in read operations, some data may be read into buffer,
-                            # but not consumed by the application.
-                            # Unwrap operation will throw ssl.SSLError(APPLICATION_DATA_AFTER_CLOSE_NOTIFY)
-                            # if there is still some data in the reading buffer.
-                            # It is safe to ignore such error
-                            if isinstance(self._read_conn, ssl.SSLSocket):
-                                self._read_conn = self._read_conn.unwrap()
+                if self._read_conn is not None:
+                    with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                        # Due to buffering in read operations, some data may be read into buffer,
+                        # but not consumed by the application.
+                        # Unwrap operation will throw ssl.SSLError(APPLICATION_DATA_AFTER_CLOSE_NOTIFY)
+                        # if there is still some data in the reading buffer.
+                        # It is safe to ignore such error
+                        if isinstance(self._read_conn, ssl.SSLSocket):
+                            self._read_conn = self._read_conn.unwrap()
 
-                        with ignore_network_errors("Closing read connection"):  # (c) MiaRec
-                            self._read_conn.close()
-                            self._read_conn = None
+                    with ignore_network_errors("Closing read connection"):  # (c) MiaRec
+                        self._read_conn.close()
+                        self._read_conn = None
 
-                    with ignore_network_errors("Closing FTP file connection"):  # (c) MiaRec
-                        self.ftp.quit()
+                with ignore_network_errors("Closing FTP file connection"):  # (c) MiaRec
+                    self.ftp.quit()
 
-                finally:
-                    super(FTPFile, self).close()
+            finally:
+                super(FTPFile, self).close()
 
     def tell(self):
         # type: () -> int
@@ -298,7 +278,7 @@ class FTPFile(io.RawIOBase):
         remaining = size
 
         conn = self.read_conn
-        with catch_ftp_errors(self.fs, op='read', path=self.path, lock=self._lock):
+        with convert_ftp_errors(self.fs, op='read', path=self.path):
             while remaining:
                 if remaining < 0:
                     read_size = DEFAULT_CHUNK_SIZE
@@ -349,7 +329,7 @@ class FTPFile(io.RawIOBase):
         if isinstance(data, array.array):
             data = data.tobytes()
 
-        with catch_ftp_errors(self.fs, op='write', path=self.path, lock=self._lock):
+        with convert_ftp_errors(self.fs, op='write', path=self.path):
             conn = self.write_conn
             data_pos = 0
             remaining_data = len(data)
@@ -382,15 +362,14 @@ class FTPFile(io.RawIOBase):
         # as we are reading the original file into memory and then pushing it back.
         # If file is huge, we can hit Out-of-memory issue
         # (c) MiaRec
-        with self._lock:
-            if size is None:
-                size = self.tell()
-            with self.fs.openbin(self.path) as f:
-                data = f.read(size)
-            with self.fs.openbin(self.path, "w") as f:
-                f.write(data)
-                if len(data) < size:
-                    f.write(b"\0" * (size - len(data)))
+        if size is None:
+            size = self.tell()
+        with self.fs.openbin(self.path) as f:
+            data = f.read(size)
+        with self.fs.openbin(self.path, "w") as f:
+            f.write(data)
+            if len(data) < size:
+                f.write(b"\0" * (size - len(data)))
         return size
 
     def seekable(self):
@@ -402,46 +381,45 @@ class FTPFile(io.RawIOBase):
         _whence = int(whence)
         if _whence not in (Seek.set, Seek.current, Seek.end):
             raise ValueError("invalid value for whence")
-        with self._lock:
-            if _whence == Seek.set:
-                new_pos = pos
-            elif _whence == Seek.current:
-                new_pos = self.pos + pos
-            elif _whence == Seek.end:
-                file_size = self.fs.getsize(self.path)
-                new_pos = file_size + pos
+        if _whence == Seek.set:
+            new_pos = pos
+        elif _whence == Seek.current:
+            new_pos = self.pos + pos
+        elif _whence == Seek.end:
+            file_size = self.fs.getsize(self.path)
+            new_pos = file_size + pos
 
-            new_pos = max(0, new_pos)
-            if new_pos == self.pos:
-                return self.pos   # no changes in position, do nothing
+        new_pos = max(0, new_pos)
+        if new_pos == self.pos:
+            return self.pos   # no changes in position, do nothing
 
-            # We need to re-open write_conn/read_conn to move the file seek position.
-            # When they are re-opened, RESTART (REST) FTP command is sent with a file position
-            self.pos = new_pos
+        # We need to re-open write_conn/read_conn to move the file seek position.
+        # When they are re-opened, RESTART (REST) FTP command is sent with a file position
+        self.pos = new_pos
 
-            # Make sure we flush all pending write data before closing the connection (c) MiaRec
-            if self._write_conn is not None:
-                with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
-                    if isinstance(self._write_conn, ssl.SSLSocket):
-                        self._write_conn = self._write_conn.unwrap()
-                with ignore_network_errors("Closing write connection"):  # (c) MiaRec
-                    self._write_conn.close()
-                self._write_conn = None
+        # Make sure we flush all pending write data before closing the connection (c) MiaRec
+        if self._write_conn is not None:
+            with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                if isinstance(self._write_conn, ssl.SSLSocket):
+                    self._write_conn = self._write_conn.unwrap()
+            with ignore_network_errors("Closing write connection"):  # (c) MiaRec
+                self._write_conn.close()
+            self._write_conn = None
 
-                with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
-                    self.ftp.voidresp()  # Ensure last write completed
+            with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
+                self.ftp.voidresp()  # Ensure last write completed
 
-            if self._read_conn is not None:
-                with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
-                    if isinstance(self._read_conn, ssl.SSLSocket):
-                        self._read_conn = self._read_conn.unwrap()
-                with ignore_network_errors("Closing read connection"):  # (c) MiaRec
-                    self._read_conn.close()
-                self._read_conn = None
+        if self._read_conn is not None:
+            with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                if isinstance(self._read_conn, ssl.SSLSocket):
+                    self._read_conn = self._read_conn.unwrap()
+            with ignore_network_errors("Closing read connection"):  # (c) MiaRec
+                self._read_conn.close()
+            self._read_conn = None
 
-            with ignore_network_errors("Closing FTP file connection"):  # (c) MiaRec
-                self.ftp.quit()
-            self.ftp = self._open_ftp()
+        with ignore_network_errors("Closing FTP file connection"):  # (c) MiaRec
+            self.ftp.quit()
+        self.ftp = self._open_ftp()
 
         return self.tell()
 
@@ -576,7 +554,7 @@ class FTPFS(FS):
             _ftp = FTP()
 
         _ftp.set_debuglevel(0)
-        with catch_ftp_errors(self, op="open_ftp", lock=self._lock):
+        with convert_ftp_errors(self, op="open_ftp"):
             _ftp.connect(self.host, self.port, self.timeout)
             _ftp.login(self.user, self.passwd, self.acct)
             try:
@@ -585,7 +563,7 @@ class FTPFS(FS):
                 pass
             self._features = {}
             try:
-                feat_response = _decode(_ftp.sendcmd("FEAT"), "latin-1")
+                feat_response = _ftp.sendcmd("FEAT")
             except error_perm:  # pragma: no cover
                 self.encoding = "latin-1"
             else:
@@ -599,10 +577,10 @@ class FTPFS(FS):
         self._welcome = _ftp.welcome
         return _ftp
 
-    def _manage_ftp(self):
-        # type: () -> ContextManager[FTP]
-        ftp = self._open_ftp()
-        return manage_ftp(ftp)
+    def _close_ftp(self):
+        if self._ftp is not None:
+            self._ftp.quit()
+            self._ftp = None
 
     @property
     def ftp_url(self):
@@ -622,12 +600,6 @@ class FTPFS(FS):
         url = "{}://{}{}".format(scheme, _user_part, _host_part)
         return url
 
-    @property
-    def ftp(self):
-        # type: () -> FTP
-        """~ftplib.FTP: the underlying FTP client."""
-        return self._get_ftp()
-
     def geturl(self, path, purpose="download"):
         # type: (str, str) -> Text
         """Get FTP url for resource."""
@@ -637,26 +609,20 @@ class FTPFS(FS):
         url_params = '?implicit_tls=True' if self.implicit_tls else ''
         return "{}{}{}".format(self.ftp_url, _path, url_params)
 
-    def _get_ftp(self):
-        # type: () -> FTP
-        if self._ftp is None:
-            self._ftp = self._open_ftp()
-        return self._ftp
-
     @property
     def features(self):  # noqa: D401
         # type: () -> Dict[Text, Text]
         """`dict`: Features of the remote FTP server."""
-        self._get_ftp()
-        return self._features
+        with ftp_connection(self, op='get_features'):
+            return self._features
 
     def _read_dir(self, path):
         # type: (Text) -> Dict[Text, Info]
         _path = abspath(normpath(path))
         lines = []  # type: List[Union[ByteString, Text]]
-        with catch_ftp_errors(self, path=path, op='LIST', lock=self._lock):
-            self.ftp.retrlines(
-                str("LIST ") + _encode(_path, self.ftp.encoding), lines.append
+        with ftp_connection(self, path=path, op='LIST') as ftp:
+            ftp.retrlines(
+                "LIST " + _path, lines.append
             )
         lines = [
             line.decode("utf-8") if isinstance(line, bytes) else line for line in lines
@@ -680,11 +646,11 @@ class FTPFS(FS):
     def create(self, path, wipe=False):
         # type: (Text, bool) -> bool
         _path = self.validatepath(path)
-        with catch_ftp_errors(self, path, op='STOR', lock=self._lock):
+        with ftp_connection(self, path, op='STOR') as ftp:
             if wipe or not self.isfile(path):
                 empty_file = io.BytesIO()
-                self.ftp.storbinary(
-                    str("STOR ") + _encode(_path, self.ftp.encoding), empty_file
+                ftp.storbinary(
+                    "STOR " + _path, empty_file
                 )
                 return True
         return False
@@ -773,39 +739,38 @@ class FTPFS(FS):
             )
 
         if self.supports_mlst:
-            with catch_ftp_errors(self, path=path, op="MLST", lock=self._lock):
-                response = self.ftp.sendcmd(
-                    str("MLST ") + _encode(_path, self.ftp.encoding)
+            with ftp_connection(self, path=path, op="MLST") as ftp:
+                response = ftp.sendcmd(
+                    "MLST " + _path
                 )
-            lines = _decode(response, self.ftp.encoding).splitlines()[1:-1]
+            lines = response.splitlines()[1:-1]
             for raw_info in self._parse_mlsx(lines):
                 return Info(raw_info)
 
-        with catch_ftp_errors(self, path=path, op='read_dir', lock=self._lock):
-            dir_name, file_name = split(_path)
-            directory = self._read_dir(dir_name)
-            if file_name not in directory:
-                raise errors.ResourceNotFound(path)
-            info = directory[file_name]
-            return info
+        dir_name, file_name = split(_path)
+        directory = self._read_dir(dir_name)
+        if file_name not in directory:
+            raise errors.ResourceNotFound(path)
+        info = directory[file_name]
+        return info
 
     def getmeta(self, namespace="standard"):
         # type: (Text) -> Dict[Text, object]
         _meta = {}  # type: Dict[Text, object]
-        self._get_ftp()
-        if namespace == "standard":
-            _meta = self._meta.copy()
-            _meta["unicode_paths"] = "UTF8" in self.features
-            _meta["supports_mtime"] = "MDTM" in self.features
+        with ftp_connection(self, op='getmeta') as ftp:
+            if namespace == "standard":
+                _meta = self._meta.copy()
+                _meta["unicode_paths"] = "UTF8" in self.features
+                _meta["supports_mtime"] = "MDTM" in self.features
         return _meta
 
     def getmodified(self, path):
         # type: (Text) -> Optional[datetime.datetime]
         if self.supports_mdtm:
             _path = self.validatepath(path)
-            with catch_ftp_errors(self, path=path, op="MDTM", lock=self._lock):
-                cmd = "MDTM " + _encode(_path, self.ftp.encoding)
-                response = self.ftp.sendcmd(cmd)
+            with ftp_connection(self, path=path, op="MDTM") as ftp:
+                cmd = "MDTM " + _path
+                response = ftp.sendcmd(cmd)
                 mtime = self._parse_ftp_time(response.split()[1])
                 return epoch_to_datetime(mtime)
         return super(FTPFS, self).getmodified(path)
@@ -826,7 +791,7 @@ class FTPFS(FS):
         # type: (...) -> SubFS[_F]
         _path = self.validatepath(path)
 
-        with catch_ftp_errors(self, path=path, op="MKD", lock=self._lock):
+        with ftp_connection(self, path=path, op="MKD") as ftp:
             if _path == "/":
                 if recreate:
                     return self.opendir(path)
@@ -835,7 +800,7 @@ class FTPFS(FS):
 
             if not (recreate and self.isdir(path)):
                 try:
-                    self.ftp.mkd(_encode(_path, self.ftp.encoding))
+                    ftp.mkd(_path)
                 except error_perm as error:
                     code, _ = _parse_ftp_error(error)
                     if code == "550":
@@ -876,8 +841,8 @@ class FTPFS(FS):
         with self._lock:
             if self.isdir(path):
                 raise errors.FileExpected(path=path)
-            with catch_ftp_errors(self, path, op="DELE", lock=None):
-                self.ftp.delete(_encode(_path, self.ftp.encoding))
+            with ftp_connection(self, path, op="DELE") as ftp:
+                ftp.delete(_path)
 
     def removedir(self, path):
         # type: (Text) -> None
@@ -885,9 +850,9 @@ class FTPFS(FS):
         if _path == "/":
             raise errors.RemoveRootError()
 
-        with catch_ftp_errors(self, path, op="RMD", lock=self._lock):
+        with ftp_connection(self, path, op="RMD") as ftp:
             try:
-                self.ftp.rmd(_encode(_path, self.ftp.encoding))
+                ftp.rmd(_path)
             except error_perm as error:
                 code, _ = _parse_ftp_error(error)
                 if code == "550":
@@ -903,11 +868,11 @@ class FTPFS(FS):
         with self._lock:
             if self.supports_mlst:
                 lines = []
-                with catch_ftp_errors(self, path=path, op="MLSD", lock=None):
+                with ftp_connection(self, path=path, op="MLSD") as ftp:
                     try:
-                        self.ftp.retrlines(
-                            str("MLSD ") + _encode(_path, self.ftp.encoding),
-                            lambda l: lines.append(_decode(l, self.ftp.encoding)),
+                        ftp.retrlines(
+                            "MLSD " + _path,
+                            lambda l: lines.append(l),
                         )
                     except error_perm:
                         if not self.getinfo(path).is_dir:
@@ -938,9 +903,9 @@ class FTPFS(FS):
     def upload(self, path, file, chunk_size=None, **options):
         # type: (Text, BinaryIO, Optional[int], **Any) -> None
         _path = self.validatepath(path)
-        with catch_ftp_errors(self, path, op="STOR", lock=self._lock):
-            self.ftp.storbinary(
-                str("STOR ") + _encode(_path, self.ftp.encoding), file
+        with ftp_connection(self, path, op="STOR") as ftp:
+            ftp.storbinary(
+                "STOR " + _path, file
             )
 
     def writebytes(self, path, contents):
@@ -963,15 +928,15 @@ class FTPFS(FS):
                 mtime = cast(float, info_details["modified"])
 
         if use_mfmt:
-            with catch_ftp_errors(self, path, "MFMT", lock=self._lock):
+            with ftp_connection(self, path, "MFMT") as ftp:
                 cmd = (
                     "MFMT "
                     + datetime.datetime.utcfromtimestamp(mtime).strftime("%Y%m%d%H%M%S")
                     + " "
-                    + _encode(path, self.ftp.encoding)
+                    + path
                 )
                 try:
-                    self.ftp.sendcmd(cmd)
+                    ftp.sendcmd(cmd)
                 except error_perm:
                     pass
         else:
@@ -982,20 +947,17 @@ class FTPFS(FS):
         # type: (Text) -> bytes
         _path = self.validatepath(path)
         data = io.BytesIO()
-        # Note, lock is not required here because a brand-new connection is created
-        with catch_ftp_errors(self, path, op="RETR", lock=None):
-            # TODO: why do we create new FTP connection for "readbytes()", but not for "upload()" (c) MiaRec?
-            with self._manage_ftp() as ftp:
-                try:
-                    ftp.retrbinary(
-                        str("RETR ") + _encode(_path, self.ftp.encoding), data.write
-                    )
-                except error_perm as error:
-                    code, _ = _parse_ftp_error(error)
-                    if code == "550":
-                        if self.isdir(path):
-                            raise errors.FileExpected(path)
-                    raise
+        with ftp_connection(self, path, op="RETR") as ftp:
+            try:
+                ftp.retrbinary(
+                    "RETR " + _path, data.write
+                )
+            except error_perm as error:
+                code, _ = _parse_ftp_error(error)
+                if code == "550":
+                    if self.isdir(path):
+                        raise errors.FileExpected(path)
+                raise
 
         data_bytes = data.getvalue()
         return data_bytes
@@ -1004,8 +966,7 @@ class FTPFS(FS):
         # type: () -> None
         if not self.isclosed():
             try:
-                self.ftp.quit()
+                self._close_ftp()
             except Exception:  # pragma: no cover
                 pass
-            self._ftp = None
         super(FTPFS, self).close()

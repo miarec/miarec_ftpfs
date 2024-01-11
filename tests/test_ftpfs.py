@@ -1,9 +1,5 @@
-# coding: utf-8
-from __future__ import absolute_import, print_function, unicode_literals
-
 import calendar
 import datetime
-import os
 import platform
 import shutil
 import socket
@@ -19,10 +15,10 @@ except ImportError:
 
 from ftplib import error_perm, error_temp
 from pyftpdlib.authorizers import DummyAuthorizer
-from six import BytesIO, text_type
+from six import BytesIO
 
 from fs import errors
-from miarec_ftpfs import FTPFS, catch_ftp_errors
+from miarec_ftpfs import FTPFS, convert_ftp_errors
 from fs.opener import open_fs
 import fs.path
 from fs.subfs import SubFS
@@ -105,23 +101,23 @@ class TestFTPErrors(unittest.TestCase):
         mem_fs.port = 21
 
         with self.assertRaises(errors.ResourceError):
-            with catch_ftp_errors(mem_fs, path="foo"):
+            with convert_ftp_errors(mem_fs, path="foo"):
                 raise error_temp
 
         with self.assertRaises(errors.OperationFailed):
-            with catch_ftp_errors(mem_fs):
+            with convert_ftp_errors(mem_fs):
                 raise error_temp
 
         with self.assertRaises(errors.InsufficientStorage):
-            with catch_ftp_errors(mem_fs):
+            with convert_ftp_errors(mem_fs):
                 raise error_perm("552 foo")
 
         with self.assertRaises(errors.ResourceNotFound):
-            with catch_ftp_errors(mem_fs):
+            with convert_ftp_errors(mem_fs):
                 raise error_perm("501 foo")
 
         with self.assertRaises(errors.PermissionDenied):
-            with catch_ftp_errors(mem_fs):
+            with convert_ftp_errors(mem_fs):
                 raise error_perm("999 foo")
 
     def test_manager_with_host(self):
@@ -129,16 +125,16 @@ class TestFTPErrors(unittest.TestCase):
         mem_fs.host = "ftp.example.com"
         mem_fs.port = 21
 
-        with self.assertRaises(errors.RemoteConnectionError) as err_info:
-            with catch_ftp_errors(mem_fs):
+        with self.assertRaises(errors.RemoteConnectionError):
+            with convert_ftp_errors(mem_fs):
                 raise EOFError
 
-        with self.assertRaises(errors.RemoteConnectionError) as err_info:
-            with catch_ftp_errors(mem_fs):
+        with self.assertRaises(errors.RemoteConnectionError):
+            with convert_ftp_errors(mem_fs):
                 raise socket.error
 
-        with self.assertRaises(errors.OperationTimeout) as err_info:
-            with catch_ftp_errors(mem_fs):
+        with self.assertRaises(errors.RemoteConnectionError):
+            with convert_ftp_errors(mem_fs):
                 raise socket.timeout
 
 
@@ -347,11 +343,8 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
             self.assertTrue(ftp_fs.isfile("foo"))
 
     def test_upload_connection(self):
-        fs = self.fs.delegate_fs()
-        with mock.patch.object(fs, "_manage_ftp") as _manage_ftp:
-            self.fs.upload("foo", BytesIO(b"hello"))
+        self.fs.upload("foo", BytesIO(b"hello"))
         self.assertEqual(self.fs.readtext("foo"), "hello")
-        _manage_ftp.assert_not_called()
 
 
 class TestFTPFSNoMLSD(TestFTPFS):
@@ -359,7 +352,7 @@ class TestFTPFSNoMLSD(TestFTPFS):
         fs = super(TestFTPFSNoMLSD, self).make_fs()
 
         ftp_fs = fs.delegate_fs()
-        ftp_fs.features
+        ftp_fs.features  # touch the attribute, so it is populated from FTP connection
         del ftp_fs.features["MLST"]
         return fs
 
