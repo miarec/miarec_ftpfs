@@ -182,6 +182,12 @@ class FTPFile(io.RawIOBase):
         self.ftp = self._open_ftp()
         self._read_conn = None  # type: Optional[socket.socket]
         self._write_conn = None  # type: Optional[socket.socket]
+        self._closed = False
+
+    def __del__(self):
+        # Close this file and release FTP connection when the object is destroyed by garbage collector
+        # Otherwise, we may have a connection leakage
+        self.close()
 
     def _open_ftp(self):
         # type: () -> FTP
