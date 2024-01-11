@@ -148,23 +148,28 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
     proto = "mftp"
     user = "user"
     pasw = "1234"
+    implicit_tls = False
+    open_url_params = ''
 
     @classmethod
     def startServer(cls, temp_dir):
         from pyftpdlib.test import ThreadedTestFTPd
 
         server = ThreadedTestFTPd()
-        server.shutdown_after = -1
+
         server.handler.authorizer = DummyAuthorizer()
         server.handler.authorizer.add_user(
             cls.user, cls.pasw, temp_dir, perm="elradfmwT"
         )
         server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
         server.start()
 
         # Don't know why this is necessary on Windows
         if platform.system() == "Windows":
             time.sleep(0.1)
+
         # Poll until a connection can be made
         if not server.is_alive():
             raise RuntimeError("could not start FTP TLS server.")
@@ -195,7 +200,8 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
             port=self.server.port,
             user=self.user,
             passwd=self.pasw,
-            tls=True if self.proto.endswith('ftps') else False
+            tls=True if self.proto.endswith('ftps') else False,
+            implicit_tls=self.implicit_tls,
         )
         self.test_folder = uuid.uuid4().hex
         self.ftp_fs.makedir(self.test_folder, recreate=True)
@@ -217,8 +223,8 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
     def test_ftp_url(self):
         self.assertEqual(
             self.fs.geturl(""),
-            "{}://{}:{}@{}:{}/{}".format(
-                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder
+            "{}://{}:{}@{}:{}/{}{}".format(
+                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder, self.open_url_params
             ),
         )
 
@@ -228,20 +234,20 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
         self.fs.create("foo/bar")
         self.assertEqual(
             self.fs.geturl("foo"),
-            "{}://{}:{}@{}:{}/{}/foo".format(
-                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder
+            "{}://{}:{}@{}:{}/{}/foo{}".format(
+                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder, self.open_url_params
             ),
         )
         self.assertEqual(
             self.fs.geturl("bar"),
-            "{}://{}:{}@{}:{}/{}/bar".format(
-                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder
+            "{}://{}:{}@{}:{}/{}/bar{}".format(
+                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder, self.open_url_params
             ),
         )
         self.assertEqual(
             self.fs.geturl("foo/bar"),
-            "{}://{}:{}@{}:{}/{}/foo/bar".format(
-                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder
+            "{}://{}:{}@{}:{}/{}/foo/bar{}".format(
+                self.proto, self.user, self.pasw, self.server.host, self.server.port, self.test_folder, self.open_url_params
             ),
         )
 
@@ -307,7 +313,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
         self.fs.makedir("foo")
         self.fs.writetext("foo/bar", "baz")
         ftp_fs = open_fs(
-            "{}://user:1234@{}:{}/{}/foo".format(self.proto, self.server.host, self.server.port, self.test_folder)
+            "{}://user:1234@{}:{}/{}/foo{}".format(self.proto, self.server.host, self.server.port, self.test_folder, self.open_url_params)
         )
         self.assertIsInstance(ftp_fs, SubFS)
         self.assertEqual(ftp_fs.readtext("bar"), "baz")
@@ -317,7 +323,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
 
         directory = fs.path.join("home", self.user, "test", "directory")
         base = "{}://user:1234@{}:{}/{}/foo".format(self.proto, self.server.host, self.server.port, self.test_folder)
-        url = "{}/{}".format(base, directory)
+        url = "{}/{}{}".format(base, directory, self.open_url_params)
 
         # Make sure unexisting directory raises `CreateFailed`
         with self.assertRaises(errors.CreateFailed):
@@ -328,7 +334,7 @@ class TestFTPFS(FSTestCases, unittest.TestCase):
             ftp_fs.touch("foo")
 
         # Open the base filesystem and check the subdirectory exists
-        with open_fs(base) as ftp_fs:
+        with open_fs(base + self.open_url_params) as ftp_fs:
             self.assertTrue(ftp_fs.isdir(directory))
             self.assertTrue(ftp_fs.isfile(fs.path.join(directory, "foo")))
 
@@ -463,39 +469,23 @@ class TestFTPFS_TLS(TestFTPFS):
 
     @classmethod
     def startServer(cls, temp_dir):
-        from pyftpdlib.test import ThreadedTestFTPd
-        from pyftpdlib.handlers import TLS_FTPHandler
+        from .helpers import TLS_ThreadedTestFTPd
 
-        from OpenSSL import SSL
-        from .helpers import generate_tls_cert
+        server = TLS_ThreadedTestFTPd(implicit_tls=False)
 
-        (pkey, cert) = generate_tls_cert()
-
-        ssl_protocol = SSL.TLSv1_2_METHOD
-        ssl_context = SSL.Context(ssl_protocol)
-        ssl_context.use_privatekey(pkey)
-        ssl_context.use_certificate(cert)
-
-
-        class TLS_ThreadedTestFTPd(ThreadedTestFTPd):
-            """A threaded FTP server over TLS.
-            """
-            handler = TLS_FTPHandler
-            handler.ssl_context = ssl_context
-
-
-        server = TLS_ThreadedTestFTPd()
-        server.shutdown_after = -1
         server.handler.authorizer = DummyAuthorizer()
         server.handler.authorizer.add_user(
             cls.user, cls.pasw, temp_dir, perm="elradfmwT"
         )
         server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
         server.start()
 
         # Don't know why this is necessary on Windows
         if platform.system() == "Windows":
             time.sleep(0.1)
+
         # Poll until a connection can be made
         if not server.is_alive():
             raise RuntimeError("could not start FTP TLS server.")
@@ -503,3 +493,37 @@ class TestFTPFS_TLS(TestFTPFS):
         return server
 
 
+
+@mark.slow
+@unittest.skipIf(platform.python_implementation() == "PyPy", "ftp unreliable with PyPy")
+class TestFTPFS_ImplicitTLS(TestFTPFS):
+    """FTP over TLS (implicit)"""
+
+    proto = "mftps"
+    implicit_tls = True
+    open_url_params = '?implicit_tls=True'
+
+    @classmethod
+    def startServer(cls, temp_dir):
+        from .helpers import TLS_ThreadedTestFTPd
+
+        server = TLS_ThreadedTestFTPd(implicit_tls=True)
+
+        server.handler.authorizer = DummyAuthorizer()
+        server.handler.authorizer.add_user(
+            cls.user, cls.pasw, temp_dir, perm="elradfmwT"
+        )
+        server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
+        server.start()
+
+        # Don't know why this is necessary on Windows
+        if platform.system() == "Windows":
+            time.sleep(0.1)
+
+        # Poll until a connection can be made
+        if not server.is_alive():
+            raise RuntimeError("could not start FTP TLS server.")
+
+        return server

@@ -3,6 +3,8 @@ from typing import Tuple
 import random
 from OpenSSL import crypto
 import socket
+from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler, SSLConnection, SSL
+from pyftpdlib.test import ThreadedTestFTPd
 
 
 def generate_tls_cert_legacy() -> Tuple[crypto.PKey, crypto.X509]:
@@ -91,3 +93,131 @@ def generate_tls_cert() -> Tuple[crypto.PKey, crypto.X509]:
         crypto.PKey.from_cryptography_key(private_key),
         crypto.X509.from_cryptography(certificate)
     )
+
+
+
+class ImplicitTLS_FTPHandler(SSLConnection, FTPHandler):
+    """A FTPHandler subclass supporting Implicit TLS/SSL.
+
+    Based on the pyftdlib's TLS_FTPHandler and
+    old email thread https://github.com/giampaolo/pyftpdlib/issues/160
+
+    SSL-specific options:
+
+        - (string) certfile:
+        the path to the file which contains a certificate to be
+        used to identify the local side of the connection.
+        This  must always be specified, unless context is provided
+        instead.
+
+        - (string) keyfile:
+        the path to the file containing the private RSA key;
+        can be omitted if certfile already contains the private
+        key (defaults: None).
+
+        - (int) ssl_protocol:
+        the desired SSL protocol version to use. This defaults to
+        PROTOCOL_SSLv23 which will negotiate the highest protocol
+        that both the server and your installation of OpenSSL
+        support.
+
+        - (int) ssl_options:
+        specific OpenSSL options. These default to:
+        SSL.OP_NO_SSLv2 | SSL.OP_NO_SSLv3| SSL.OP_NO_COMPRESSION
+        which are all considered insecure features.
+        Can be set to None in order to improve compatibility with
+        older (insecure) FTP clients.
+
+        - (instance) ssl_context:
+        a SSL Context object previously configured; if specified
+        all other parameters will be ignored.
+        (default None).
+    """
+
+    certfile = None
+    keyfile = None
+    ssl_protocol = SSL.SSLv23_METHOD
+    # - SSLv2 is easily broken and is considered harmful and dangerous
+    # - SSLv3 has several problems and is now dangerous
+    # - Disable compression to prevent CRIME attacks for OpenSSL 1.0+
+    #   (see https://github.com/shazow/urllib3/pull/309)
+    ssl_options = SSL.OP_NO_SSLv2 | SSL.OP_NO_SSLv3
+    if hasattr(SSL, "OP_NO_COMPRESSION"):
+        ssl_options |= SSL.OP_NO_COMPRESSION
+    ssl_context = None
+
+    def __init__(self, conn, server, ioloop=None):
+        super().__init__(conn, server, ioloop)
+        if not self.connected:
+            return
+        self.ssl_context = self.get_ssl_context()
+
+    def __repr__(self):
+        return FTPHandler.__repr__(self)
+
+    @classmethod
+    def get_ssl_context(cls):
+        if cls.ssl_context is None:
+            if cls.certfile is None:
+                raise ValueError("at least certfile must be specified")
+            cls.ssl_context = SSL.Context(cls.ssl_protocol)
+            cls.ssl_context.use_certificate_chain_file(cls.certfile)
+            if not cls.keyfile:
+                cls.keyfile = cls.certfile
+            cls.ssl_context.use_privatekey_file(cls.keyfile)
+            if cls.ssl_options:
+                cls.ssl_context.set_options(cls.ssl_options)
+        return cls.ssl_context
+
+    def close(self):
+        SSLConnection.close(self)
+        FTPHandler.close(self)
+
+    def handle_failed_ssl_handshake(self):
+        # TLS/SSL handshake failure, probably client's fault which
+        # used a SSL version different from server's.
+        # We can't rely on the control connection anymore so we just
+        # disconnect the client without sending any response.
+        self.log("SSL handshake failed.")
+        self.close()
+
+    def ftp_AUTH(self, arg):
+        self.respond("550 not supposed to be used with implicit SSL.")
+
+    #def ftp_PROT(self, arg):
+    #    self.respond("550 not supposed to be used with implicit SSL.")
+
+    def handle(self):
+        self.secure_connection(self.ssl_context)
+
+    def handle_ssl_established(self):
+        self.log("SSL is established (handle_ssl_established)")
+        FTPHandler.handle(self)
+
+
+class TLS_ThreadedTestFTPd(ThreadedTestFTPd):
+    """A threaded FTP server over TLS.
+    """
+
+    def __init__(self, addr=None, implicit_tls=False):
+        if implicit_tls:
+            self.handler = ImplicitTLS_FTPHandler
+        else:
+            self.handler = TLS_FTPHandler
+
+        self.handler.tls_data_required = True     # client must issue "AUTH TLS" before USER/PASS
+        self.handler.tls_control_required = True  # client must issue PROT before PASS or PORT
+
+        # -------------------------------------
+        # Generate self-signed SSL certificate
+        # -------------------------------------
+        ssl_context = SSL.Context(SSL.TLSv1_2_METHOD)
+        (pkey, cert) = generate_tls_cert()
+        ssl_context.use_privatekey(pkey)
+        ssl_context.use_certificate(cert)
+        self.handler.ssl_context = ssl_context
+
+        super().__init__(addr)
+
+
+

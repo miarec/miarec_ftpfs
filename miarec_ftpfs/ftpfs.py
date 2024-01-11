@@ -17,10 +17,8 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from ftplib import FTP
 
-try:
-    from ftplib import FTP_TLS
-except ImportError as err:
-    FTP_TLS = err  # type: ignore
+from ftplib import FTP_TLS
+from .ftp_tls import ImplicitFTP_TLS
 from typing import cast
 
 from ftplib import error_perm, error_temp, error_proto, error_reply
@@ -75,7 +73,7 @@ __all__ = ["FTPFS"]
 
 @contextmanager
 def ignore_errors(op):
-    """Ignore any exception inside with block (c) MiaRec"""
+    """Ignore any exception inside the "with" block (c) MiaRec"""
     try:
         yield
     except Exception as exc:
@@ -246,7 +244,9 @@ class FTPFile(io.RawIOBase):
                         with ignore_errors("Closing write connection"):  # (c) MiaRec
                             self._write_conn.close()
                             self._write_conn = None
-                            self.ftp.voidresp()  # Ensure last write completed
+
+                        with ignore_errors("FTP voidresp"):  # (c) MiaRec
+                            self.ftp.voidresp()  # Ensure last operation is completed
 
                     if self._read_conn is not None:
                         if isinstance(self._read_conn, ssl.SSLSocket):
@@ -482,6 +482,7 @@ class FTPFS(FS):
         port=21,  # type: int
         proxy=None,  # type: Optional[Text]
         tls=False,  # type: bool
+        implicit_tls=False, # type: bool
     ):
         # type: (...) -> None
         """Create a new `FTPFS` instance.
@@ -508,9 +509,7 @@ class FTPFS(FS):
         self.port = port
         self.proxy = proxy
         self.tls = tls
-
-        if self.tls and isinstance(FTP_TLS, Exception):
-            raise_from(errors.CreateFailed("FTP over TLS not supported"), FTP_TLS)
+        self.implicit_tls = implicit_tls
 
         self.encoding = "latin-1"
         self._ftp = None  # type: Optional[FTP]
@@ -553,7 +552,11 @@ class FTPFS(FS):
     def _open_ftp(self):
         # type: () -> FTP
         """Open a new ftp object."""
-        _ftp = FTP_TLS() if self.tls else FTP()
+        if self.tls:
+            _ftp = ImplicitFTP_TLS() if self.implicit_tls else FTP_TLS()
+        else:
+            _ftp = FTP()
+
         _ftp.set_debuglevel(0)
         with catch_ftp_errors(self, op="open_ftp"):
             _ftp.connect(self.host, self.port, self.timeout)
@@ -613,7 +616,8 @@ class FTPFS(FS):
         _path = self.validatepath(path)
         if purpose != "download":
             raise errors.NoURL(_path, purpose)
-        return "{}{}".format(self.ftp_url, _path)
+        url_params = '?implicit_tls=True' if self.implicit_tls else ''
+        return "{}{}{}".format(self.ftp_url, _path, url_params)
 
     def _get_ftp(self):
         # type: () -> FTP

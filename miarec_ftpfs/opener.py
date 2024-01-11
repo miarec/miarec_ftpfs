@@ -18,6 +18,18 @@ if typing.TYPE_CHECKING:
     from fs.subfs import SubFS
     from fs.opener.parse import ParseResult
 
+def asbool(val):
+    if val is None:
+        return False
+
+    if isinstance(val, bool):
+        return val
+
+    if not isinstance(val, str):
+        val = str(val)
+
+    return val.lower() in ['true', '1', 't', 'y', 'yes', 'on']
+
 
 class FTPOpener(Opener):
     """`FTPFS` opener."""
@@ -48,6 +60,7 @@ class FTPOpener(Opener):
             proxy=parse_result.params.get("proxy"),
             timeout=int(parse_result.params.get("timeout", "10")),
             tls=bool(parse_result.protocol == "mftps"),
+            implicit_tls=asbool(parse_result.params.get("implicit_tls")),
         )
         if dir_path:
             if create:
