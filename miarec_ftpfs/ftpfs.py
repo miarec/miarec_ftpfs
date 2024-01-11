@@ -72,13 +72,13 @@ _F = typing.TypeVar("_F", bound="FTPFS")
 __all__ = ["FTPFS"]
 
 @contextmanager
-def ignore_errors(op):
+def ignore_network_errors(op):
     """Ignore any exception inside the "with" block (c) MiaRec"""
     try:
         yield
-    except Exception as exc:
-        log.info(f"[{op}] Unexpected exception: {exc}")
-        raise
+
+    except (ssl.SSLError, socket.error) as error:
+        log.info(f"[{op}] Unexpected network error (ignoring): {error}")
         pass   # do nothing
 
 
@@ -88,6 +88,12 @@ def catch_ftp_errors(fs, path=None, op=None):
     try:
         with fs._lock:   
             yield
+
+    except ssl.SSLError as error:
+        log.info('FTP SSL Socket error: %s' % error)
+        raise errors.RemoteConnectionError(
+            msg=f"ftp connection SSL error (host={fs.host}:{fs.port} op={op}): {error}"
+        )
 
     except socket.timeout as error:
         log.info('FTP Socket timeout error: %s' % error)
@@ -100,7 +106,6 @@ def catch_ftp_errors(fs, path=None, op=None):
         raise errors.RemoteConnectionError(
             msg=f"ftp connection error (host={fs.host}:{fs.port} op={op}): {error}"
         )
-
 
     except EOFError as error:     # FTP.getresp() may throw EOFError (c) MiaRec
         log.info('FTP Unexpected EOF: %s' % error)
@@ -191,7 +196,7 @@ class FTPFile(io.RawIOBase):
         self.mode = Mode(mode)
         self.pos = 0
         self._lock = threading.Lock()
-        self._ftp = None
+        self.ftp = self._open_ftp()
         self._read_conn = None  # type: Optional[socket.socket]
         self._write_conn = None  # type: Optional[socket.socket]
 
@@ -201,18 +206,6 @@ class FTPFile(io.RawIOBase):
         ftp = self.fs._open_ftp()
         ftp.voidcmd(str("TYPE I"))
         return ftp
-
-    @property
-    def ftp(self):
-        # type: () -> FTP
-        """Get the opened FTP object for this file"""
-        if self._ftp is None:
-            self._ftp = self._open_ftp()
-        return self._ftp
-
-    @ftp.setter
-    def ftp(self, value):
-        self._ftp = value
 
     @property
     def read_conn(self):
@@ -250,27 +243,33 @@ class FTPFile(io.RawIOBase):
                     if self._write_conn is not None:
                         # Here we silently ignore any errors during closing of the file (c) MiaRec
                         # A network connection could be already dead and any FTP commands will throw error
-                        if isinstance(self._write_conn, ssl.SSLSocket):
-                            with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                        with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                            if isinstance(self._write_conn, ssl.SSLSocket):
                                 self._write_conn = self._write_conn.unwrap()
 
-                        with ignore_errors("Closing write connection"):  # (c) MiaRec
+                        with ignore_network_errors("Closing write connection"):  # (c) MiaRec
                             self._write_conn.close()
-                            self._write_conn = None
 
-                        with ignore_errors("FTP voidresp"):  # (c) MiaRec
+                        self._write_conn = None
+
+                        with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
                             self.ftp.voidresp()  # Ensure last operation is completed
 
                     if self._read_conn is not None:
-                        if isinstance(self._read_conn, ssl.SSLSocket):
-                            with ignore_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                        with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                            # Due to buffering in read operations, some data may be read into buffer,
+                            # but not consumed by the application.
+                            # Unwrap operation will throw ssl.SSLError(APPLICATION_DATA_AFTER_CLOSE_NOTIFY)
+                            # if there is still some data in the reading buffer.
+                            # It is safe to ignore such error
+                            if isinstance(self._read_conn, ssl.SSLSocket):
                                 self._read_conn = self._read_conn.unwrap()
 
-                        with ignore_errors("Closing read connection"):  # (c) MiaRec
+                        with ignore_network_errors("Closing read connection"):  # (c) MiaRec
                             self._read_conn.close()
                             self._read_conn = None
 
-                    with ignore_errors("Closing FTP file connection"):  # (c) MiaRec
+                    with ignore_network_errors("Closing FTP file connection"):  # (c) MiaRec
                         self.ftp.quit()
 
                 finally:
@@ -419,19 +418,21 @@ class FTPFile(io.RawIOBase):
 
             # Make sure we flush all pending write data before closing the connection (c) MiaRec
             if self._write_conn is not None:
-                if isinstance(self._write_conn, ssl.SSLSocket):
-                    with ignore_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                with ignore_network_errors("Unwrapping SSL write connection"):  # (c) MiaRec
+                    if isinstance(self._write_conn, ssl.SSLSocket):
                         self._write_conn = self._write_conn.unwrap()
-                with ignore_errors("Closing write connection"):  # (c) MiaRec
+                with ignore_network_errors("Closing write connection"):  # (c) MiaRec
                     self._write_conn.close()
                 self._write_conn = None
-                self.ftp.voidresp()  # Ensure last write completed
+
+                with ignore_network_errors("FTP voidresp"):  # (c) MiaRec
+                    self.ftp.voidresp()  # Ensure last write completed
 
             if self._read_conn is not None:
-                if isinstance(self._read_conn, ssl.SSLSocket):
-                    with ignore_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                with ignore_network_errors("Unwrapping SSL read connection"):  # (c) MiaRec
+                    if isinstance(self._read_conn, ssl.SSLSocket):
                         self._read_conn = self._read_conn.unwrap()
-                with ignore_errors("Closing read connection"):  # (c) MiaRec
+                with ignore_network_errors("Closing read connection"):  # (c) MiaRec
                     self._read_conn.close()
                 self._read_conn = None
 
