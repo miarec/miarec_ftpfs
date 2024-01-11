@@ -78,6 +78,7 @@ def ignore_errors(op):
         yield
     except Exception as exc:
         log.info(f"[{op}] Unexpected exception: {exc}")
+        raise
         pass   # do nothing
 
 
@@ -190,7 +191,7 @@ class FTPFile(io.RawIOBase):
         self.mode = Mode(mode)
         self.pos = 0
         self._lock = threading.Lock()
-        self.ftp = self._open_ftp()
+        self._ftp = None
         self._read_conn = None  # type: Optional[socket.socket]
         self._write_conn = None  # type: Optional[socket.socket]
 
@@ -200,6 +201,18 @@ class FTPFile(io.RawIOBase):
         ftp = self.fs._open_ftp()
         ftp.voidcmd(str("TYPE I"))
         return ftp
+
+    @property
+    def ftp(self):
+        # type: () -> FTP
+        """Get the opened FTP object for this file"""
+        if self._ftp is None:
+            self._ftp = self._open_ftp()
+        return self._ftp
+
+    @ftp.setter
+    def ftp(self, value):
+        self._ftp = value
 
     @property
     def read_conn(self):
