@@ -69,8 +69,6 @@ Automated unit tests are run on [GitHub Actions](https://github.com/miarec/miare
 
 To run the tests locally, do the following.
 
-Install Docker on local machine.
-
 Create activate python virtual environment:
 
     python -m vevn venv
