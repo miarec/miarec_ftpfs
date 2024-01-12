@@ -1,9 +1,11 @@
-# miarec_s3fs
+# miarec_ftpfs
 
 MiaRec FTPFS is a [PyFilesystem](https://www.pyfilesystem.org/) interface to
 FTP/FTPS storage.
 
 This a fork of the builtin FTPFS class from [PyFileSystem2](https://github.com/PyFilesystem/pyfilesystem2) project, written by Will McGugan (email willmcgugan@gmail.com). 
+
+[![Actions](https://img.shields.io/github/actions/workflow/status/miarec/miarec_ftpfs/test.yml?branch=master&logo=github&style=flat-square&maxAge=300)](https://github.com/miarec/miarec_ftpfs/actions)
 
 The code was modified by MiaRec team to fullfill our needs.
 
