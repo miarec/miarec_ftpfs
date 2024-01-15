@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [v2024.1.1] - 2024-01-15
 
-[v2024.1.1]: https://github.com/miarec/miarec_sshfs/compare/v2024.1.0...v2024.1.1    
+[v2024.1.1]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.0...v2024.1.1    
 
 ### Changed
 
