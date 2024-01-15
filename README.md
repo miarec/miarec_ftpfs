@@ -1,6 +1,6 @@
 # miarec_ftpfs
 
-[![Actions](https://img.shields.io/github/actions/workflow/status/miarec/miarec_ftpfs/test.yml?branch=master&logo=github&style=flat-square&maxAge=300)](https://github.com/miarec/miarec_ftpfs/actions)
+[![Actions](https://img.shields.io/github/actions/workflow/status/miarec/miarec_ftpfs/test_and_release.yml?branch=master&logo=github&style=flat-square&maxAge=300)](https://github.com/miarec/miarec_ftpfs/actions)
 
 MiaRec FTPFS is a [PyFilesystem](https://www.pyfilesystem.org/) interface to
 FTP/FTPS storage.
