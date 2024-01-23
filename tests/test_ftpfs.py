@@ -520,3 +520,203 @@ class TestFTPFS_ImplicitTLS(TestFTPFS):
             raise RuntimeError("could not start FTP TLS server.")
 
         return server
+
+
+@mark.slow
+@unittest.skipIf(platform.python_implementation() == "PyPy", "ftp unreliable with PyPy")
+class TestConnectionRecovery(unittest.TestCase):
+    proto = "mftp"
+    user = "user"
+    pasw = "1234"
+    implicit_tls = False
+    open_url_params = ''
+
+    @classmethod
+    def startServer(cls, temp_dir, host='localhost', port=0):
+        from pyftpdlib.test import ThreadedTestFTPd
+
+        server = ThreadedTestFTPd(addr=(host, port))
+
+        server.handler.authorizer = DummyAuthorizer()
+        server.handler.authorizer.add_user(
+            cls.user, cls.pasw, temp_dir, perm="elradfmwT"
+        )
+        server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
+        server.start()
+
+        # Don't know why this is necessary on Windows
+        if platform.system() == "Windows":
+            time.sleep(0.1)
+
+        # Poll until a connection can be made
+        if not server.is_alive():
+            raise RuntimeError("could not start FTP TLS server.")
+
+        return server
+
+    @classmethod
+    def stopServer(cls, server):
+        server.stop()
+        server.join(2.0)
+
+    def open_fs(self, server):
+        # Create unique sub-folder for each test (c) MiaRec
+        ftp_fs = FTPFS(
+            host=server.host,
+            port=server.port,
+            user=self.user,
+            passwd=self.pasw,
+            tls=True if self.proto.endswith('ftps') else False,
+            implicit_tls=self.implicit_tls,
+        )
+        return ftp_fs
+
+    def create_test_data(self, server, test_folder):
+        ftp = self.open_fs(server)
+
+        ftp.makedir(test_folder, recreate=True)
+
+        with ftp.openbin(f'{test_folder}/foo.txt', 'wb') as f:
+            f.write(b'this is a test')
+
+        with ftp.openbin(f'{test_folder}/bar.txt', 'wb') as f:
+            f.write(b'this is the second test')
+
+        ftp.close()
+
+
+    def test_connection_loss(self):
+
+        # ------------------------------------------
+        # Start SFTP server in docker container
+        # ------------------------------------------
+        temp_dir = tempfile.mkdtemp("ftpfs2tests")
+        ftp_server = None
+        ftp_fs = None
+
+        try:
+
+            ftp_server = self.startServer(temp_dir)
+            ftp_port = ftp_server.port
+
+            # ------------------------------------------
+            # Create some test files
+            # ------------------------------------------
+            test_folder = uuid.uuid4().hex
+
+            self.create_test_data(ftp_server, test_folder=test_folder)
+
+            ftp_fs = self.open_fs(ftp_server)
+
+            self.assertEqual(set(ftp_fs.listdir(test_folder)), set(['foo.txt', 'bar.txt']))
+
+            with ftp_fs.openbin(f'{test_folder}/foo.txt', 'rb') as f:
+                data = f.read()
+                self.assertEqual(data, b'this is a test')
+
+            # ------------------------------------------
+            # Stop container
+            # ------------------------------------------
+            self.stopServer(ftp_server)
+            ftp_server = None
+
+            # ------------------------------------------
+            # EXPECTED: RemoteConnectionError exception when trying to use such File System
+            # ------------------------------------------
+            with self.assertRaises(fs.errors.RemoteConnectionError):
+                self.assertEqual(set(ftp_fs.listdir(test_folder)), set(['foo.txt', 'bar.txt']))
+
+            with self.assertRaises(fs.errors.RemoteConnectionError):
+                with ftp_fs.openbin(f'{test_folder}/foo.txt', 'rb') as f:
+                    data = f.read()
+                    self.assertEqual(data, b'this is a test')
+
+            # ------------------------------------------
+            # Re-start SFTP server container on the same port
+            # ------------------------------------------
+            ftp_server = self.startServer(temp_dir, port=ftp_port)
+            # self.create_test_data(port=self.port, test_folder=test_folder)
+
+            # ------------------------------------------
+            # EXPECTED: a connection to SFTP server is re-established automatically
+            #           all operations succeed
+            # ------------------------------------------
+            self.assertEqual(set(ftp_fs.listdir(test_folder)), set(['foo.txt', 'bar.txt']))
+
+            with ftp_fs.openbin(f'{test_folder}/foo.txt', 'rb') as f:
+                data = f.read()
+                self.assertEqual(data, b'this is a test')
+
+        finally:
+            if ftp_server:
+                self.stopServer(ftp_server)
+
+            shutil.rmtree(temp_dir)
+
+
+@mark.slow
+@unittest.skipIf(platform.python_implementation() == "PyPy", "ftp unreliable with PyPy")
+class TestConnectionRecovery_TLS(TestConnectionRecovery):
+    """Connection recover for FTP over TLS (implicit)"""
+
+    proto = "mftps"
+    implicit_tls = False
+
+    def startServer(cls, temp_dir, host='localhost', port=0):
+        from .helpers import TLS_ThreadedTestFTPd
+
+        server = TLS_ThreadedTestFTPd(implicit_tls=cls.implicit_tls, addr=(host, port))
+
+        server.handler.authorizer = DummyAuthorizer()
+        server.handler.authorizer.add_user(
+            cls.user, cls.pasw, temp_dir, perm="elradfmwT"
+        )
+        server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
+        server.start()
+
+        # Don't know why this is necessary on Windows
+        if platform.system() == "Windows":
+            time.sleep(0.1)
+
+        # Poll until a connection can be made
+        if not server.is_alive():
+            raise RuntimeError("could not start FTP TLS server.")
+
+        return server
+
+
+@mark.slow
+@unittest.skipIf(platform.python_implementation() == "PyPy", "ftp unreliable with PyPy")
+class TestConnectionRecovery_ImplicitTLS(TestConnectionRecovery):
+    """Connection recover for FTP over TLS (implicit)"""
+
+    proto = "mftps"
+    implicit_tls = True
+
+    def startServer(cls, temp_dir, host='localhost', port=0):
+        from .helpers import TLS_ThreadedTestFTPd
+
+        server = TLS_ThreadedTestFTPd(implicit_tls=cls.implicit_tls, addr=(host, port))
+
+        server.handler.authorizer = DummyAuthorizer()
+        server.handler.authorizer.add_user(
+            cls.user, cls.pasw, temp_dir, perm="elradfmwT"
+        )
+        server.handler.authorizer.add_anonymous(temp_dir)
+
+        server.shutdown_after = -1
+        server.start()
+
+        # Don't know why this is necessary on Windows
+        if platform.system() == "Windows":
+            time.sleep(0.1)
+
+        # Poll until a connection can be made
+        if not server.is_alive():
+            raise RuntimeError("could not start FTP TLS server.")
+
+        return server

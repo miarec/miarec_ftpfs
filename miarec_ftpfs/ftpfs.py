@@ -40,7 +40,6 @@ if typing.TYPE_CHECKING:
         BinaryIO,
         ByteString,
         Container,
-        ContextManager,
         Dict,
         Iterable,
         Iterator,
@@ -81,7 +80,7 @@ def ignore_network_errors(op):
 
 
 @contextmanager
-def convert_ftp_errors(fs, path=None, op=None):
+def convert_ftp_errors(fs, path=None, op=None, connection_error=errors.RemoteConnectionError):
     """Convert Socket and FTP protocol errors into the appropriate FSError types"""
 
     try:
@@ -89,26 +88,26 @@ def convert_ftp_errors(fs, path=None, op=None):
 
     except ssl.SSLError as error:
         log.info('FTP SSL Socket error: %s' % error)
-        raise errors.RemoteConnectionError(
-            msg=f"ftp connection SSL error (host={fs.host}:{fs.port} op={op}): {error}"
+        raise connection_error(
+            f"ftp connection SSL error (host={fs.host}:{fs.port} op={op}): {error}"
         )
 
     except socket.timeout as error:
         log.info('FTP Socket timeout error: %s' % error)
-        raise errors.RemoteConnectionError(
-            msg=f"ftp operation timed out (host={fs.host}:{fs.port} op={op} path={path})"
+        raise connection_error(
+            f"ftp operation timed out (host={fs.host}:{fs.port} op={op} path={path}): {error}"
         )
 
     except socket.error as error:
         log.info('FTP Socket error: %s' % error)
-        raise errors.RemoteConnectionError(
-            msg=f"ftp connection error (host={fs.host}:{fs.port} op={op}): {error}"
+        raise connection_error(
+            f"ftp connection error (host={fs.host}:{fs.port} op={op}): {error}"
         )
 
     except EOFError as error:     # FTP.getresp() may throw EOFError (c) MiaRec
         log.info('FTP Unexpected EOF: %s' % error)
-        raise errors.RemoteConnectionError(
-            msg=f"lost connection to {fs.host}:{fs.port} op={op} path={path}"
+        raise connection_error(
+            f"ftp lost connection to {fs.host}:{fs.port} op={op} path={path}: {error}"
         )
 
     except (error_reply, error_proto) as error:   # Added by MiaRec
@@ -144,8 +143,9 @@ def convert_ftp_errors(fs, path=None, op=None):
         else:
             raise errors.PermissionDenied(path=path, msg=message)
 
+
 @contextmanager
-def ftp_connection(fs, path=None, op=None):
+def get_ftp_connection(fs, path=None, op=None):
     # type: (FTPFS, Optional[Text], Optional[Text]) -> Iterator[FTP]
     """
     Handle FTP errors accordingly.
@@ -153,15 +153,22 @@ def ftp_connection(fs, path=None, op=None):
     In case of RemoteConnectioError, the internal network connection will be discarded,
     and on the next operation, a new connection to remote server will be attempted.
     """
-    with fs._lock:
-        try:
-            with convert_ftp_errors(fs, path, op):
+    ftp = None
+    try:
+        with convert_ftp_errors(fs, path, op):
+            with fs._lock:
                 if fs._ftp is None:
                     fs._ftp = fs._open_ftp()   # this method can throw exception
-                yield fs._ftp
-        except errors.RemoteConnectionError:
-            fs._ftp = None   # Discard the network connection. It will be reopened  on the next operation
-            raise
+                ftp = fs._ftp
+            yield ftp
+    except errors.RemoteConnectionError:
+        with fs._lock:
+            if ftp:
+                with ignore_network_errors(op):
+                    ftp.close()    # RemoteConnectionError could be caused by socket.timeout. Close FTP connection to avoid memory leakage
+            if ftp == fs._ftp:
+                fs._ftp = None   # Discard the network connection. It will be reopened  on the next operation
+        raise
 
 
 def _parse_ftp_error(error):
@@ -189,11 +196,11 @@ class FTPFile(io.RawIOBase):
         # Otherwise, we may have a connection leakage
         self.close()
 
-    def _open_ftp(self):
+    def _open_ftp(self, connection_error=errors.RemoteConnectionError):
         # type: () -> FTP
         """Open an ftp object for the file."""
-        ftp = self.fs._open_ftp()
-        with convert_ftp_errors(self.fs, op='open_file', path=self.path):
+        ftp = self.fs._open_ftp(connection_error=connection_error)
+        with convert_ftp_errors(self.fs, op='open_file', path=self.path, connection_error=connection_error):
             ftp.voidcmd(str("TYPE I"))
         return ftp
 
@@ -202,7 +209,7 @@ class FTPFile(io.RawIOBase):
     def read_conn(self):
         # type: () -> socket.socket
         if self._read_conn is None:
-            with convert_ftp_errors(self.fs, op='open_read_conn', path=self.path):
+            with convert_ftp_errors(self.fs, op='open_read_conn', path=self.path, connection_error=IOError):
                 self._read_conn = self.ftp.transfercmd(
                     "RETR " + self.path, self.pos
                 )
@@ -212,7 +219,7 @@ class FTPFile(io.RawIOBase):
     def write_conn(self):
         # type: () -> socket.socket
         if self._write_conn is None:
-            with convert_ftp_errors(self.fs, op='open_write_conn', path=self.path):
+            with convert_ftp_errors(self.fs, op='open_write_conn', path=self.path, connection_error=IOError):
                 if self.mode.appending:
                     self._write_conn = self.ftp.transfercmd(
                         "APPE " + self.path
@@ -284,7 +291,7 @@ class FTPFile(io.RawIOBase):
         remaining = size
 
         conn = self.read_conn
-        with convert_ftp_errors(self.fs, op='read', path=self.path):
+        with convert_ftp_errors(self.fs, op='read', path=self.path, connection_error=IOError):
             while remaining:
                 if remaining < 0:
                     read_size = DEFAULT_CHUNK_SIZE
@@ -335,7 +342,7 @@ class FTPFile(io.RawIOBase):
         if isinstance(data, array.array):
             data = data.tobytes()
 
-        with convert_ftp_errors(self.fs, op='write', path=self.path):
+        with convert_ftp_errors(self.fs, op='write', path=self.path, connection_error=IOError):
             conn = self.write_conn
             data_pos = 0
             remaining_data = len(data)
@@ -551,7 +558,7 @@ class FTPFS(FS):
                     features[key] = value
         return features
 
-    def _open_ftp(self):
+    def _open_ftp(self, connection_error=errors.RemoteConnectionError):
         # type: () -> FTP
         """Open a new ftp object."""
         if self.tls:
@@ -560,7 +567,7 @@ class FTPFS(FS):
             _ftp = FTP()
 
         _ftp.set_debuglevel(0)
-        with convert_ftp_errors(self, op="open_ftp"):
+        with convert_ftp_errors(self, op="open_ftp", connection_error=connection_error):
             _ftp.connect(self.host, self.port, self.timeout)
             _ftp.login(self.user, self.passwd, self.acct)
             try:
@@ -619,14 +626,14 @@ class FTPFS(FS):
     def features(self):  # noqa: D401
         # type: () -> Dict[Text, Text]
         """`dict`: Features of the remote FTP server."""
-        with ftp_connection(self, op='get_features'):
+        with get_ftp_connection(self, op='get_features'):
             return self._features
 
     def _read_dir(self, path):
         # type: (Text) -> Dict[Text, Info]
         _path = abspath(normpath(path))
         lines = []  # type: List[Union[ByteString, Text]]
-        with ftp_connection(self, path=path, op='LIST') as ftp:
+        with get_ftp_connection(self, path=path, op='LIST') as ftp:
             ftp.retrlines(
                 "LIST " + _path, lines.append
             )
@@ -652,7 +659,7 @@ class FTPFS(FS):
     def create(self, path, wipe=False):
         # type: (Text, bool) -> bool
         _path = self.validatepath(path)
-        with ftp_connection(self, path, op='STOR') as ftp:
+        with get_ftp_connection(self, path, op='STOR') as ftp:
             if wipe or not self.isfile(path):
                 empty_file = io.BytesIO()
                 ftp.storbinary(
@@ -745,7 +752,7 @@ class FTPFS(FS):
             )
 
         if self.supports_mlst:
-            with ftp_connection(self, path=path, op="MLST") as ftp:
+            with get_ftp_connection(self, path=path, op="MLST") as ftp:
                 response = ftp.sendcmd(
                     "MLST " + _path
                 )
@@ -763,7 +770,7 @@ class FTPFS(FS):
     def getmeta(self, namespace="standard"):
         # type: (Text) -> Dict[Text, object]
         _meta = {}  # type: Dict[Text, object]
-        with ftp_connection(self, op='getmeta') as ftp:
+        with get_ftp_connection(self, op='getmeta') as ftp:
             if namespace == "standard":
                 _meta = self._meta.copy()
                 _meta["unicode_paths"] = "UTF8" in self.features
@@ -774,7 +781,7 @@ class FTPFS(FS):
         # type: (Text) -> Optional[datetime.datetime]
         if self.supports_mdtm:
             _path = self.validatepath(path)
-            with ftp_connection(self, path=path, op="MDTM") as ftp:
+            with get_ftp_connection(self, path=path, op="MDTM") as ftp:
                 cmd = "MDTM " + _path
                 response = ftp.sendcmd(cmd)
                 mtime = self._parse_ftp_time(response.split()[1])
@@ -797,7 +804,7 @@ class FTPFS(FS):
         # type: (...) -> SubFS[_F]
         _path = self.validatepath(path)
 
-        with ftp_connection(self, path=path, op="MKD") as ftp:
+        with get_ftp_connection(self, path=path, op="MKD") as ftp:
             if _path == "/":
                 if recreate:
                     return self.opendir(path)
@@ -847,7 +854,7 @@ class FTPFS(FS):
         with self._lock:
             if self.isdir(path):
                 raise errors.FileExpected(path=path)
-            with ftp_connection(self, path, op="DELE") as ftp:
+            with get_ftp_connection(self, path, op="DELE") as ftp:
                 ftp.delete(_path)
 
     def removedir(self, path):
@@ -856,7 +863,7 @@ class FTPFS(FS):
         if _path == "/":
             raise errors.RemoveRootError()
 
-        with ftp_connection(self, path, op="RMD") as ftp:
+        with get_ftp_connection(self, path, op="RMD") as ftp:
             try:
                 ftp.rmd(_path)
             except error_perm as error:
@@ -874,7 +881,7 @@ class FTPFS(FS):
         with self._lock:
             if self.supports_mlst:
                 lines = []
-                with ftp_connection(self, path=path, op="MLSD") as ftp:
+                with get_ftp_connection(self, path=path, op="MLSD") as ftp:
                     try:
                         ftp.retrlines(
                             "MLSD " + _path,
@@ -909,7 +916,7 @@ class FTPFS(FS):
     def upload(self, path, file, chunk_size=None, **options):
         # type: (Text, BinaryIO, Optional[int], **Any) -> None
         _path = self.validatepath(path)
-        with ftp_connection(self, path, op="STOR") as ftp:
+        with get_ftp_connection(self, path, op="STOR") as ftp:
             ftp.storbinary(
                 "STOR " + _path, file
             )
@@ -934,7 +941,7 @@ class FTPFS(FS):
                 mtime = cast(float, info_details["modified"])
 
         if use_mfmt:
-            with ftp_connection(self, path, "MFMT") as ftp:
+            with get_ftp_connection(self, path, "MFMT") as ftp:
                 cmd = (
                     "MFMT "
                     + datetime.datetime.utcfromtimestamp(mtime).strftime("%Y%m%d%H%M%S")
@@ -953,7 +960,7 @@ class FTPFS(FS):
         # type: (Text) -> bytes
         _path = self.validatepath(path)
         data = io.BytesIO()
-        with ftp_connection(self, path, op="RETR") as ftp:
+        with get_ftp_connection(self, path, op="RETR") as ftp:
             try:
                 ftp.retrbinary(
                     "RETR " + _path, data.write
@@ -992,7 +999,7 @@ class FTPFS(FS):
         if self.getinfo(src_path).is_dir:
             raise errors.FileExpected(src_path)
 
-        with ftp_connection(self, src_path, op='rename {} -> {}'.format(src_path, dst_path)) as ftp:
+        with get_ftp_connection(self, src_path, op='rename {} -> {}'.format(src_path, dst_path)) as ftp:
             try:
                 ftp.rename(src_path, dst_path)
             except error_perm:

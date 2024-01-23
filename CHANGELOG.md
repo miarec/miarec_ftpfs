@@ -5,10 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [v2024.1.2] - 2024-01-23
+
+[v2024.1.2]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.1...v2024.1.2
+
+### Changed
+
+- Add unit tests for connection recovery
+- Fix potential race condition and connection leakage under certain conditions
 
 ## [v2024.1.1] - 2024-01-15
 
-[v2024.1.1]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.0...v2024.1.1    
+[v2024.1.1]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.0...v2024.1.1
 
 ### Changed
 

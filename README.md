@@ -9,11 +9,21 @@ This a fork of the builtin FTPFS class from [PyFileSystem2](https://github.com/P
 
 The code was modified by MiaRec team to fullfill our needs.
 
-## Notable differences between miarec_s3fs and fs-s3fs
+## Notable differences between miarec_ftpfs.FTPFS and fs.FTPFS
 
 1. Requires Python 3.6+. A support of Python 2.7 is removed.
 
 2. Opener protocol prefixes are `mftp://` and `mftps://` for FTP and FTP-over-TLS respectively (instead of the original `ftp://` and `ftps://`)
+
+3. Add Implicit TLS support
+
+4. Fix bugs in Explicit TLS implementation
+
+5. Automatically try to re-open FTP connection on the next operation in case of network issues.
+  Previously, the `FTPFS` object was stuck in error state, and any operations on the file system instance, like `openbin()`, `listdir()`, etc, were failing infinitely.
+
+6. Better error handling. All FTP protocol-specific and SSL errors are converted into corresponding `FSError` exception
+
 
 ## Installing
 
@@ -28,9 +38,9 @@ This will install the most recent stable version.
 Alternatively, if you want the cutting edge code, you can check out
 the GitHub repos at https://github.com/miarec/miarec_ftpfs
 
-## Opening a S3FS
+## Opening a FTPFS
 
-Open an S3FS by explicitly using the constructor:
+Open an FTPFS by explicitly using the constructor:
 
 ```python
 from fs.ftpfs import FTPFS
@@ -67,7 +77,7 @@ ftp_fs = fs.open_fs('mftp://ftp.ebi.ac.uk/?proxy=test.rebex.net')
 
 ## Testing
 
-Automated unit tests are run on [GitHub Actions](https://github.com/miarec/miarec_s3fs/actions)
+Automated unit tests are run on [GitHub Actions](https://github.com/miarec/miarec_ftpfs/actions)
 
 To run the tests locally, do the following.
 
