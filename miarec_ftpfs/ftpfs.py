@@ -16,11 +16,11 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from ftplib import FTP
 
-from ftplib import FTP_TLS
 from .ftp_tls import ImplicitFTP_TLS, ExplicitFTP_TLS
 from typing import cast
 
 from ftplib import error_perm, error_temp, error_proto, error_reply
+import ftplib
 from six import PY2, raise_from, text_type
 
 from . import _ftp_parse as ftp_parse
@@ -74,7 +74,7 @@ def ignore_network_errors(op):
     """Ignore Socket and SSL errors"""
     try:
         yield
-    except (ssl.SSLError, socket.error) as error:
+    except (ssl.SSLError, socket.error, ftplib.Error) as error:
         log.info(f"[{op}] Unexpected network error (ignoring): {error}")
         pass   # do nothing
 
