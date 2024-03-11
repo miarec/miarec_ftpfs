@@ -508,6 +508,8 @@ class FTPFS(FS):
             proxy (str, optional): An FTP proxy, or ``None`` (default)
                 for no proxy.
             tls (bool): Attempt to use FTP over TLS (FTPS) (default: False)
+            implicit_tls (bool): Use Implicit TLS (default: False)
+            reuse_ssl_session (bool): Reuse SSL session between control and data channels (default: True)
 
         """
         super(FTPFS, self).__init__()
@@ -566,7 +568,7 @@ class FTPFS(FS):
     def _open_ftp(self, connection_error=errors.RemoteConnectionError):
         # type: () -> FTP
         """Open a new ftp object."""
-        if self.tls:
+        if self.tls or self.implicit_tls:
             _ftp = (
                 ImplicitFTP_TLS(reuse_ssl_session=self.reuse_ssl_session) 
                 if self.implicit_tls else 
