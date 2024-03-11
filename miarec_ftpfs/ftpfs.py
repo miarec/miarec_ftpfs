@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from ftplib import FTP
 
 from ftplib import FTP_TLS
-from .ftp_tls import ImplicitFTP_TLS
+from .ftp_tls import ImplicitFTP_TLS, ExplicitFTP_TLS
 from typing import cast
 
 from ftplib import error_perm, error_temp, error_proto, error_reply
@@ -492,6 +492,7 @@ class FTPFS(FS):
         proxy=None,  # type: Optional[Text]
         tls=False,  # type: bool
         implicit_tls=False, # type: bool
+        reuse_ssl_session=True,  # type: bool
     ):
         # type: (...) -> None
         """Create a new `FTPFS` instance.
@@ -519,6 +520,10 @@ class FTPFS(FS):
         self.proxy = proxy
         self.tls = tls
         self.implicit_tls = implicit_tls
+
+        # Support TLS session resumpion
+        # See https://stackoverflow.com/questions/14659154/ftpes-session-reuse-required
+        self.reuse_ssl_session = reuse_ssl_session
 
         self.encoding = "latin-1"
         self._ftp = None  # type: Optional[FTP]
@@ -562,7 +567,11 @@ class FTPFS(FS):
         # type: () -> FTP
         """Open a new ftp object."""
         if self.tls:
-            _ftp = ImplicitFTP_TLS() if self.implicit_tls else FTP_TLS()
+            _ftp = (
+                ImplicitFTP_TLS(reuse_ssl_session=self.reuse_ssl_session) 
+                if self.implicit_tls else 
+                ExplicitFTP_TLS(reuse_ssl_session=self.reuse_ssl_session)
+            )
         else:
             _ftp = FTP()
 
