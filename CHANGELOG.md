@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [v2024.1.3] - 2024-03-11
+
+[v2024.1.3]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.2...v2024.1.3
+
+### Changed
+
+- Reuse SSL session bewteen control and data channels (fixes compatibility issue with the latest FileZilla Server)
+
+
 ## [v2024.1.2] - 2024-01-23
 
 [v2024.1.2]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.1...v2024.1.2
