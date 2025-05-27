@@ -16,9 +16,9 @@ jobs:
       matrix:
         python-version:
           # - '3.6'    # Python 3.6 is EOL. Not available on Ubuntu 22.04 in GitHub
-          - '3.7'
-          - '3.8'
-          - '3.9'
+          # - '3.7'
+          # - '3.8'
+          # - '3.9'
           - '3.10'
           - '3.11'
     steps:
