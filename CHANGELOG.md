@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
+## [v2025.5.27] - 2025-05-27
+
+[v2025.5.27]: https://github.com/miarec/miarec_ftpfs/compare/v2024.3.1...v2025.5.27
+
+### Changed
+
+- Fix compatibility issue with FTP servers that return responses in multi-line format
+
 ## [v2024.3.1] - 2024-03-11
 
 [v2024.3.1]: https://github.com/miarec/miarec_ftpfs/compare/v2024.1.2...v2024.3.1

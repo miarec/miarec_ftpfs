@@ -174,7 +174,13 @@ def get_ftp_connection(fs, path=None, op=None):
 def _parse_ftp_error(error):
     # type: (ftplib.Error) -> Tuple[Text, Text]
     """Extract code and message from ftp error."""
-    code, _, message = text_type(error).partition(" ")
+    text = text_type(error)
+    code = text[:3]
+    if text[3:4] == '-':
+        # If the error message is multiline, we take the first line
+        message = text.splitlines()[0][4:]
+    else:
+        message = text[4:]
     return code, message
 
 
